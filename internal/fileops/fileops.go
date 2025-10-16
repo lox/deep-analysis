@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // Handler provides file operation capabilities
@@ -94,8 +96,8 @@ func (h *Handler) GrepFiles(ctx context.Context, pattern, pathPattern string, ig
 		pathPattern = filepath.Join(home, pathPattern[1:])
 	}
 
-	// Find matching files
-	matches, err := filepath.Glob(pathPattern)
+	// Find matching files using doublestar for ** support
+	matches, err := doublestar.FilepathGlob(pathPattern)
 	if err != nil {
 		return "", fmt.Errorf("invalid path pattern: %w", err)
 	}
@@ -188,8 +190,8 @@ func (h *Handler) GlobFiles(ctx context.Context, pattern string) (string, error)
 		pattern = filepath.Join(home, pattern[1:])
 	}
 
-	// Find matching files
-	matches, err := filepath.Glob(pattern)
+	// Find matching files using doublestar for ** support
+	matches, err := doublestar.FilepathGlob(pattern)
 	if err != nil {
 		return "", fmt.Errorf("invalid glob pattern: %w", err)
 	}
