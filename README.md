@@ -1,6 +1,6 @@
-# Deep Analysis MCP
+# Deep Analysis CLI
 
-An MCP (Model Context Protocol) server that provides access to systematic deep analysis for complex problems. The AI agent can read files, search codebases, and discover files to gather context for comprehensive analysis.
+A CLI tool (`deep-analysis`) for systematic deep analysis of markdown documents and codebases using OpenAI GPT-5-Pro. It reads files, searches with grep/glob, and appends structured findings to your documents. MCP server pieces exist in the repo, but the primary interface is the CLI.
 
 ## Features
 
@@ -27,8 +27,8 @@ An MCP (Model Context Protocol) server that provides access to systematic deep a
 # Install dependencies
 go mod download
 
-# Build
-task build
+# Build the CLI
+task build   # outputs dist/deep-analysis
 ```
 
 ### Without Hermit
@@ -37,8 +37,8 @@ task build
 # Install dependencies
 go mod download
 
-# Build
-go build -o dist/deep-analysis-mcp .
+# Build the CLI
+go build -o dist/deep-analysis .
 ```
 
 ## Configuration
@@ -55,53 +55,20 @@ Or use direnv with `.envrc`:
 export OPENAI_API_KEY="your-api-key-here"
 ```
 
-## Usage
-
-### Quick Start with HTTP
+## Usage (CLI)
 
 ```bash
-# Start the server
-task start:tmux
+# Build (or use task build)
+go build -o dist/deep-analysis .
 
-# Install to your MCP client
-task install:amp          # For Amp
-task install:codex        # For Codex
-task install:claude-code  # For Claude Code
+# Run analysis on a markdown file in place
+./dist/deep-analysis --input notes.md
 
-# Stop the server
-task stop
+# Write output to a different file
+./dist/deep-analysis --input notes.md --output annotated.md
 ```
 
-### Manual Installation
-
-Add to your MCP client configuration (e.g., Amp settings):
-
-```json
-{
-  "mcpServers": {
-    "deep-analysis": {
-      "url": "http://localhost:8080/mcp"
-    }
-  }
-}
-```
-
-### Transport Options
-
-Run with different transports:
-
-```bash
-# stdio (default)
-./dist/deep-analysis-mcp
-
-# HTTP streaming
-./dist/deep-analysis-mcp -transport http -addr :8080
-
-# SSE
-./dist/deep-analysis-mcp -transport sse -addr :8080
-```
-
-## The `deep-analysis` Tool
+## The `deep-analysis` Parameters
 
 ### Parameters
 
@@ -113,7 +80,7 @@ Run with different transports:
 
 ### Available Tools for the AI
 
-The deep analysis AI has access to these tools to gather information:
+The CLI-backed AI has access to these tools to gather information:
 
 - **glob_files(pattern)**: Discover files matching glob patterns (e.g., `**/*.go`, `internal/**/test_*.go`)
 - **read_file(path)**: Read contents of any file from the filesystem
@@ -123,11 +90,7 @@ The AI will automatically use these tools when it needs to examine code or gathe
 
 ### Conversation Flow
 
-Conversation state is managed server-side:
-
-- **continue: true** (default) - Continues from the previous response
-- **continue: false** - Starts a fresh conversation
-- Conversation history persists for the lifetime of the MCP server process
+Conversation state is maintained in the OpenAI thread; the CLI continues previous context unless you set `continue: false`.
 
 ### Examples
 
@@ -181,7 +144,7 @@ Query 2 (automatically continues):
 
 ## How It Works
 
-This MCP uses OpenAI's Responses API with GPT-5-Pro. The system prompt guides the model to:
+The tool uses OpenAI's Responses API with GPT-5-Pro. The system prompt guides the model to:
 
 1. **Discover**: Use glob_files to find relevant files
 2. **Review**: Read pre-attached files and discovered files
@@ -221,12 +184,11 @@ task stop
 
 ```
 .
-├── main.go                      # MCP server initialization
+├── main.go                      # CLI entrypoint
 ├── internal/
 │   ├── client/
 │   │   └── deepanalysis.go     # OpenAI Responses API client
-│   ├── server/
-│   │   └── mcp.go              # MCP server setup and tool registration
+│   ├── server/                 # MCP server wiring (secondary, optional)
 │   └── fileops/
 │       └── fileops.go          # File operation handlers (read, grep, glob)
 └── Taskfile.yaml               # Build and development tasks
@@ -248,7 +210,7 @@ The server logs to stderr with timestamps. Logs include:
 - Tool executions (file reads, grep operations, glob searches)
 - Response processing details
 
-View logs when testing or check logs at `~/Library/Logs/` for your MCP client.
+View logs when testing or check logs at `~/Library/Logs/` for your client; CLI logs to stderr.
 
 ## Pricing
 

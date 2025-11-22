@@ -4,16 +4,10 @@ version: '3'
 
 tasks:
   build:
-    desc: Build the deep-analysis-mcp binary
+    desc: Build the deep-analysis binary
     cmds:
       - mkdir -p dist
-      - go build -o dist/deep-analysis-mcp .
-
-  run:
-    desc: Run the deep-analysis-mcp server
-    deps: [build]
-    cmds:
-      - ./dist/deep-analysis-mcp
+      - go build -o dist/deep-analysis .
 
   test:
     desc: Run tests
@@ -35,16 +29,8 @@ tasks:
     cmds:
       - rm -rf dist/ bin/
 
-  dev:
-    desc: Run in development mode with auto-reload
-    deps: [build]
-    cmds:
-      - |
-        export OPENAI_API_KEY="${OPENAI_API_KEY}"
-        ./dist/deep-analysis-mcp
-
-  start:
-    desc: Start HTTP server on port 8080
+  run:
+    desc: Run deep-analysis on a markdown document
     deps: [build]
     cmds:
       - |
@@ -52,75 +38,12 @@ tasks:
           echo "Error: OPENAI_API_KEY environment variable is required"
           exit 1
         fi
-        ./dist/deep-analysis-mcp -transport http -addr :8080
-
-  start:tmux:
-    desc: Start HTTP server in tmux session
-    deps: [build]
-    cmds:
-      - |
-        if [ -z "${OPENAI_API_KEY}" ]; then
-          echo "Error: OPENAI_API_KEY environment variable is required"
+        if [ -z "{{.INPUT}}" ]; then
+          echo "Usage: task run INPUT=<file> [OUTPUT=<file>]"
           exit 1
         fi
-        if tmux has-session -t deep-analysis-mcp 2>/dev/null; then
-          echo "Session 'deep-analysis-mcp' already exists. Attach with: tmux attach -t deep-analysis-mcp"
-          exit 1
-        fi
-        tmux new-session -d -s deep-analysis-mcp "cd {{.ROOT_DIR}} && OPENAI_API_KEY=${OPENAI_API_KEY} ./dist/deep-analysis-mcp -transport http -addr :8080"
-        echo "Started deep-analysis-mcp server in tmux session"
-        echo "Attach with: tmux attach -t deep-analysis-mcp"
-        echo "Stop with: task stop"
-
-  stop:
-    desc: Stop tmux server session
-    cmds:
-      - |
-        if tmux has-session -t deep-analysis-mcp 2>/dev/null; then
-          tmux kill-session -t deep-analysis-mcp
-          echo "Stopped deep-analysis-mcp server"
-        else
-          echo "No tmux session 'deep-analysis-mcp' found"
-        fi
-
-  install:amp:
-    desc: Install MCP server to Amp via HTTP
-    cmds:
-      - amp mcp remove deep-analysis 2>/dev/null || true
-      - amp mcp add deep-analysis http://localhost:8080/mcp
-      - echo "Successfully installed deep-analysis MCP server to Amp"
-      - echo "Start the server with task start"
-
-  uninstall:amp:
-    desc: Uninstall MCP server from Amp
-    cmds:
-      - amp mcp remove deep-analysis
-      - echo "Successfully uninstalled deep-analysis MCP server from Amp"
-
-  install:claude-code:
-    desc: Install MCP server to Claude Code (user scope) via HTTP
-    cmds:
-      - claude mcp remove --scope user deep-analysis 2>/dev/null || true
-      - claude mcp add --scope user --transport http deep-analysis http://localhost:8080/mcp
-      - echo "Successfully installed deep-analysis MCP server to Claude Code"
-      - echo "Start the server with task start"
-
-  uninstall:claude-code:
-    desc: Uninstall MCP server from Claude Code (user scope)
-    cmds:
-      - claude mcp remove --scope user deep-analysis
-      - echo "Successfully uninstalled deep-analysis MCP server from Claude Code"
-
-  install:codex:
-    desc: Install MCP server to Codex via HTTP
-    cmds:
-      - codex mcp remove deep-analysis 2>/dev/null || true
-      - codex mcp add --url http://localhost:8080/mcp deep-analysis
-      - echo "Successfully installed deep-analysis MCP server to Codex"
-      - echo "Start the server with task start"
-
-  uninstall:codex:
-    desc: Uninstall MCP server from Codex
-    cmds:
-      - codex mcp remove deep-analysis
-      - echo "Successfully uninstalled deep-analysis MCP server from Codex"
+        {{if .OUTPUT}}
+        ./dist/deep-analysis --input {{.INPUT}} --output {{.OUTPUT}}
+        {{else}}
+        ./dist/deep-analysis --input {{.INPUT}}
+        {{end}}
