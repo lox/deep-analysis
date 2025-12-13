@@ -23,10 +23,6 @@ func (f *fakeFileOps) GlobFiles(ctx context.Context, pattern string) (string, er
 	return f.out, f.err
 }
 func (f *fakeFileOps) ListFiles(ctx context.Context, path string) (string, error) { return "", nil }
-func (f *fakeFileOps) SemanticSearch(ctx context.Context, query string, limit int) (string, error) {
-	return "", nil
-}
-func (f *fakeFileOps) IsCKAvailable() bool { return false }
 
 func TestFileSearchUsesHintPaths(t *testing.T) {
 	f := &fakeFileOps{out: "src/main.go\nsrc/util.go"}

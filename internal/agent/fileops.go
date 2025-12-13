@@ -8,6 +8,4 @@ type FileOps interface {
 	GrepFiles(ctx context.Context, pattern, path string, ignoreCase bool) (string, error)
 	GlobFiles(ctx context.Context, pattern string) (string, error)
 	ListFiles(ctx context.Context, path string) (string, error)
-	SemanticSearch(ctx context.Context, query string, limit int) (string, error)
-	IsCKAvailable() bool
 }

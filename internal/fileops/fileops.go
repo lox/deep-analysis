@@ -3,10 +3,8 @@ package fileops
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -16,31 +14,11 @@ import (
 )
 
 // Handler provides file operation capabilities
-type Handler struct {
-	ckAvailable bool
-}
+type Handler struct{}
 
 // New creates a new file operations handler
 func New() *Handler {
-	h := &Handler{}
-	h.ckAvailable = h.checkCKAvailable()
-	if h.ckAvailable {
-		log.Info("ck tool detected", "semantic_search", "enabled")
-	} else {
-		log.Debug("ck tool not found", "semantic_search", "disabled")
-	}
-	return h
-}
-
-// checkCKAvailable checks if the ck command is available
-func (h *Handler) checkCKAvailable() bool {
-	_, err := exec.LookPath("ck")
-	return err == nil
-}
-
-// IsCKAvailable returns whether ck is available
-func (h *Handler) IsCKAvailable() bool {
-	return h.ckAvailable
+	return &Handler{}
 }
 
 const (
@@ -395,88 +373,4 @@ func formatSize(size int64) string {
 	default:
 		return fmt.Sprintf("%dB", size)
 	}
-}
-
-// CKResult represents a result from ck semantic search
-type CKResult struct {
-	Path    string  `json:"path"`
-	Score   float64 `json:"score"`
-	Snippet string  `json:"snippet"`
-}
-
-// SemanticSearch performs semantic code search using ck
-func (h *Handler) SemanticSearch(ctx context.Context, query string, limit int) (string, error) {
-	if !h.ckAvailable {
-		return "", fmt.Errorf("ck tool not available - install from https://github.com/BeaconBay/ck")
-	}
-
-	log.Debug("SemanticSearch called", "query", query, "limit", limit)
-
-	// Check context before starting
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-
-	// Default limit if not specified
-	if limit <= 0 {
-		limit = 10
-	}
-
-	// Run ck with semantic search and JSON output
-	cmd := exec.CommandContext(ctx, "ck", "--sem", query, "--json")
-	output, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("ck search failed: %s", string(exitErr.Stderr))
-		}
-		return "", fmt.Errorf("ck search failed: %w", err)
-	}
-
-	// Parse JSONL output (one JSON object per line)
-	var results []CKResult
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		var result CKResult
-		if err := json.Unmarshal([]byte(line), &result); err != nil {
-			log.Debug("Failed to parse ck result", "line", line, "error", err)
-			continue
-		}
-		results = append(results, result)
-	}
-
-	if len(results) == 0 {
-		return "No semantic matches found", nil
-	}
-
-	log.Debug("SemanticSearch complete", "results", len(results))
-
-	// Format results for GPT-5-Pro
-	var formatted []string
-	for i, r := range results {
-		if i >= limit {
-			break
-		}
-
-		// Format: path (score) followed by snippet
-		formatted = append(formatted,
-			fmt.Sprintf("%s (relevance: %.2f)\n%s", r.Path, r.Score, r.Snippet))
-	}
-
-	summary := fmt.Sprintf("Found %d semantic matches (showing top %d):\n\n%s",
-		len(results), min(limit, len(results)), strings.Join(formatted, "\n\n---\n\n"))
-
-	log.Debug("SemanticSearch formatted", "output_bytes", len(summary))
-	return summary, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
