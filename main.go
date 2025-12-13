@@ -104,10 +104,17 @@ func (c *CLI) Run() error {
 		log.Info("Resetting session", "session", sessionID)
 	}
 
+	// Prepare document content
+	document := string(inputContent)
+	if previousResponseID != "" {
+		// Add continuation note for the researcher
+		document = document + "\n\n---\n\n**[Continuing from previous session. Look for any new questions or sections added after your last \"## Analysis\" output. Focus on answering those rather than repeating prior analysis.]**"
+	}
+
 	// Run analysis
 	ctx := context.Background()
-	log.Info("Running deep analysis", "bytes", len(inputContent), "scout_model", c.ScoutModel)
-	result, err := cl.Analyze(ctx, string(inputContent), client.AnalysisOptions{
+	log.Info("Running deep analysis", "bytes", len(document), "scout_model", c.ScoutModel)
+	result, err := cl.Analyze(ctx, document, client.AnalysisOptions{
 		PreviousResponseID: previousResponseID,
 	})
 	if err != nil {
