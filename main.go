@@ -20,7 +20,7 @@ type CLI struct {
 	Input      string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
 	Output     string `help:"Path to output markdown document (defaults to input file)"`
 	Debug      bool   `help:"Enable debug logging"`
-	Session    string `help:"Session id to continue a conversation (default: auto-generate)"`
+	Continue   string `help:"Session id to continue a previous conversation" name:"continue"`
 	Reset      bool   `help:"Ignore stored session state and start a fresh conversation"`
 	ScoutModel string `help:"Model to use for scout dispatcher (default: gpt-5.1)" default:"gpt-5.1"`
 	Cwd        string `help:"Working directory for file operations (default: current directory)"`
@@ -81,34 +81,34 @@ func (c *CLI) Run() error {
 		return fmt.Errorf("init session store: %w", err)
 	}
 
-	sessionID := c.Session
-	if sessionID == "" {
-		sessionID, err = store.GenerateID()
+	continueID := c.Continue
+	if continueID == "" {
+		continueID, err = store.GenerateID()
 		if err != nil {
 			return fmt.Errorf("generate session id: %w", err)
 		}
-		log.Info("Generated session id", "session", sessionID)
+		log.Info("Generated session id", "session", continueID)
 	}
 
 	var previousResponseID string
 	var existingSession *client.Session
 	if !c.Reset {
-		if sess, err := store.Load(sessionID); err == nil {
+		if sess, err := store.Load(continueID); err == nil {
 			existingSession = sess
 			previousResponseID = sess.PreviousResponseID
-			log.Info("Continuing session", "session", sessionID, "previous_response_id", previousResponseID)
+			log.Info("Continuing session", "session", continueID, "previous_response_id", previousResponseID)
 		} else if !os.IsNotExist(err) {
-			log.Warn("Failed to load session", "session", sessionID, "error", err)
+			log.Warn("Failed to load session", "session", continueID, "error", err)
 		}
 	} else {
-		log.Info("Resetting session", "session", sessionID)
+		log.Info("Resetting session", "session", continueID)
 	}
 
 	// Prepare document content
 	document := string(inputContent)
 	if previousResponseID != "" {
 		// Add continuation note for the researcher
-		document = document + "\n\n---\n\n**[Continuing from previous session. Look for any new questions or sections added after your last \"## Analysis\" output. Focus on answering those rather than repeating prior analysis.]**"
+		document += "\n\n---\n\n**[Continuing from previous session. Look for any new questions or sections added after your last \"## Analysis\" output. Focus on answering those rather than repeating prior analysis.]**"
 	}
 
 	// Run analysis
@@ -133,16 +133,16 @@ func (c *CLI) Run() error {
 
 	// Persist session state for follow-ups
 	nextSession := &client.Session{
-		ID:                 sessionID,
+		ID:                 continueID,
 		PreviousResponseID: result.ResponseID,
 	}
 	if existingSession != nil {
 		nextSession.CreatedAt = existingSession.CreatedAt
 	}
 	if err := store.Save(nextSession); err != nil {
-		log.Warn("Failed to save session state", "session", sessionID, "error", err)
+		log.Warn("Failed to save session state", "session", continueID, "error", err)
 	} else {
-		log.Info("Saved session", "session", sessionID, "response_id", result.ResponseID)
+		log.Info("Saved session", "session", continueID, "response_id", result.ResponseID)
 	}
 
 	log.Info("Analysis complete", "output", outputPath)
