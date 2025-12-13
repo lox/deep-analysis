@@ -66,6 +66,10 @@ go build -o dist/deep-analysis .
 
 # Write output to a different file
 ./dist/deep-analysis --input notes.md --output annotated.md
+
+# Start or continue a conversational session
+./dist/deep-analysis --input notes.md --session my-session
+# omit --session to auto-generate and the tool will print the id for reuse
 ```
 
 ## The `deep-analysis` Parameters
@@ -85,6 +89,7 @@ The CLI-backed AI has access to these tools to gather information:
 - **glob_files(pattern)**: Discover files matching glob patterns (e.g., `**/*.go`, `internal/**/test_*.go`)
 - **read_file(path)**: Read contents of any file from the filesystem
 - **grep_files(pattern, path, ignore_case)**: Search for regex patterns in files
+- **file_search(query, hint_paths?)**: High-level search for files matching a name or concept; uses glob/rg/semantic search under the hood.
 
 The AI will automatically use these tools when it needs to examine code or gather context.
 

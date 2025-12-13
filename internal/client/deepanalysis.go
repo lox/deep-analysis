@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"strings"
 	"sync"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/charmbracelet/log"
+	"github.com/lox/deep-analysis-mcp/internal/agent"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
@@ -15,173 +16,165 @@ import (
 
 const (
 	defaultModel  = "gpt-5-pro"
-	maxIterations = 10 // Limit function call iterations
+	maxIterations = 50
 )
-
-// FileOps defines the interface for file operations
-type FileOps interface {
-	ReadFile(ctx context.Context, path string) (string, error)
-	GrepFiles(ctx context.Context, pattern, path string, ignoreCase bool) (string, error)
-	GlobFiles(ctx context.Context, pattern string) (string, error)
-}
 
 // DeepAnalysisClient handles communication with OpenAI's Responses API
 type DeepAnalysisClient struct {
-	client  *openai.Client
-	fileOps FileOps
-	conv    map[string]string // conversation_id -> response_id
-	mu      sync.RWMutex
-	tools   []responses.ToolUnionParam
+	apiKey    string
+	client    *openai.Client
+	fileOps   agent.FileOps
+	scout     *agent.Scout
+	tools     []responses.ToolUnionParam
+	toolCache map[string]string
+	cacheMu   sync.Mutex
+}
+
+// AnalysisOptions controls request behavior.
+type AnalysisOptions struct {
+	PreviousResponseID string
+	ScoutModel         string // Model to use for scout dispatcher (default: gpt-5.1)
+}
+
+// AnalysisResult contains the final model output and metadata.
+type AnalysisResult struct {
+	Text       string
+	ResponseID string
 }
 
 // New creates a new DeepAnalysisClient instance
-func New(apiKey string, fileOps FileOps) *DeepAnalysisClient {
-	client := openai.NewClient(option.WithAPIKey(apiKey))
+func New(apiKey string, fileOps agent.FileOps, scoutModel string) *DeepAnalysisClient {
+	client := openai.NewClient(
+		option.WithAPIKey(apiKey),
+	)
+
+	if scoutModel == "" {
+		scoutModel = agent.DefaultScoutModel
+	}
 
 	c := &DeepAnalysisClient{
-		client:  &client,
-		fileOps: fileOps,
-		conv:    make(map[string]string),
+		apiKey:    apiKey,
+		client:    &client,
+		fileOps:   fileOps,
+		scout:     agent.NewScout(apiKey, scoutModel, fileOps),
+		toolCache: make(map[string]string),
 	}
 	c.tools = c.buildTools()
 
 	return c
 }
 
-// Handle processes a consultation request using Responses API
-func (c *DeepAnalysisClient) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	task, err := request.RequireString("task")
-	if err != nil {
-		log.Printf("ERROR: Failed to get task: %v", err)
-		return mcp.NewToolResultError(err.Error()), nil
-	}
+// Analyze processes a markdown document and returns the analysis result
+func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts AnalysisOptions) (AnalysisResult, error) {
+	log.Debug("Starting analysis", "bytes", len(document))
 
-	context := request.GetString("context", "")
-	files := request.GetStringSlice("files", nil)
-	continueConversation := request.GetBool("continue", true)
-	conversationID := request.GetString("conversation_id", "")
-	
-	// Use default conversation ID if none provided
-	if conversationID == "" {
-		conversationID = "default"
-	}
-	
-	// Read attached files if provided
-	var filesContent string
-	if len(files) > 0 {
-		log.Printf("Reading %d attached files", len(files))
-		var fileParts []string
-		for _, filePath := range files {
-			content, err := c.fileOps.ReadFile(ctx, filePath)
-			if err != nil {
-				log.Printf("WARNING: Failed to read file %s: %v", filePath, err)
-				fileParts = append(fileParts, fmt.Sprintf("File: %s\nError: %v\n", filePath, err))
-			} else {
-				log.Printf("Successfully read file: %s (%d bytes)", filePath, len(content))
-				fileParts = append(fileParts, fmt.Sprintf("File: %s\n```\n%s\n```\n", filePath, content))
-			}
-		}
-		filesContent = "\n" + fmt.Sprintf("Attached Files:\n%s\n", joinStrings(fileParts, "\n"))
-	}
-	
-	// Build the full prompt with context and files if provided
-	var prompt string
-	if context != "" && filesContent != "" {
-		prompt = fmt.Sprintf("Context:\n%s%s\nTask:\n%s", context, filesContent, task)
-	} else if context != "" {
-		prompt = fmt.Sprintf("Context:\n%s\n\nTask:\n%s", context, task)
-	} else if filesContent != "" {
-		prompt = fmt.Sprintf("%s\nTask:\n%s", filesContent, task)
-	} else {
-		prompt = task
-	}
-	
-	log.Printf("Received request: task_len=%d context_len=%d files=%d continue=%v conversation_id=%q", len(task), len(context), len(files), continueConversation, conversationID)
+	// Track total usage across all API calls
+	var totalInputTokens int64
+	var totalOutputTokens int64
+	var totalCachedTokens int64
+	var apiCalls int
 
-	// Get previous response ID if continuing
-	var prevResponseID string
-	if continueConversation {
-		prevResponseID = c.getRespID(conversationID)
-		if prevResponseID != "" {
-			log.Printf("Continuing conversation: id=%s response_id=%s", conversationID, prevResponseID)
-		} else {
-			log.Printf("Starting fresh conversation: id=%s", conversationID)
-		}
-	} else {
-		log.Printf("Starting fresh conversation (continue=false)")
-		// Clear existing conversation state
-		c.clearRespID(conversationID)
-	}
+	cacheKey := "deep-analysis-v3"
 
-	// Build the request parameters
 	params := responses.ResponseNewParams{
-		Model:        defaultModel,
-		Instructions: openai.Opt(buildSystemPrompt()),
-		Tools:        c.tools,
+		Model:          defaultModel,
+		Instructions:   openai.Opt(c.buildSystemPrompt()),
+		Tools:          c.tools,
+		PromptCacheKey: openai.Opt(cacheKey),
 	}
 
-	// Add input message
 	inputItems := responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage(prompt, responses.EasyInputMessageRoleUser),
+		responses.ResponseInputItemParamOfMessage(document, responses.EasyInputMessageRoleUser),
 	}
 	params.Input = responses.ResponseNewParamsInputUnion{
 		OfInputItemList: inputItems,
 	}
-
-	// Add previous response ID if continuing
-	if prevResponseID != "" {
-		params.PreviousResponseID = openai.Opt(prevResponseID)
+	if opts.PreviousResponseID != "" {
+		params.PreviousResponseID = openai.Opt(opts.PreviousResponseID)
 	}
 
-	// Call OpenAI Responses API
-	log.Printf("Calling OpenAI Responses API: model=%s", defaultModel)
+	log.Debug("Calling OpenAI Responses API", "model", defaultModel, "previous_response_id", opts.PreviousResponseID)
 	response, err := c.client.Responses.New(ctx, params)
 	if err != nil {
-		log.Printf("ERROR: OpenAI API call failed: %v", err)
-		return mcp.NewToolResultError(fmt.Sprintf("OpenAI API error: %v", err)), nil
+		log.Error("OpenAI API call failed", "error", err)
+		return AnalysisResult{}, fmt.Errorf("OpenAI API error: %w", err)
 	}
 
-	// Save the response ID for conversation continuity
-	if conversationID != "" {
-		c.setRespID(conversationID, response.ID)
-	}
-	log.Printf("Received response: id=%s status=%s", response.ID, response.Status)
+	apiCalls++
+	totalInputTokens += response.Usage.InputTokens
+	totalOutputTokens += response.Usage.OutputTokens
+	totalCachedTokens += response.Usage.InputTokensDetails.CachedTokens
+
+	log.Debug("Received response", "id", response.ID, "status", response.Status,
+		"input_tokens", response.Usage.InputTokens,
+		"output_tokens", response.Usage.OutputTokens,
+		"cached_tokens", response.Usage.InputTokensDetails.CachedTokens)
 
 	// Handle tool calls in a loop
 	for i := 0; i < maxIterations; i++ {
-		// Check if there are tool calls to execute
 		toolCalls := extractToolCalls(response)
-		log.Printf("Iteration %d: found %d tool calls", i+1, len(toolCalls))
+		log.Debug("Iteration progress", "iteration", i+1, "tool_calls", len(toolCalls))
 
 		if len(toolCalls) == 0 {
-			// No more tool calls, extract and return final text response
 			text := extractTextContent(response)
-			log.Printf("No tool calls, returning text response: len=%d", len(text))
+			log.Debug("Analysis complete", "response_length", len(text))
 			if text == "" {
-				log.Printf("ERROR: No text content in response")
-				return mcp.NewToolResultError("No text content in response"), nil
+				log.Error("No text content in response")
+				return AnalysisResult{}, fmt.Errorf("no text content in response")
 			}
-			return mcp.NewToolResultText(text), nil
+
+			// Get scout usage
+			scoutUsage := c.scout.Usage()
+
+			// Calculate costs
+			researcherCost := estimateCost(defaultModel, totalInputTokens, totalOutputTokens)
+			scoutCost := estimateCost(agent.DefaultScoutModel, scoutUsage.InputTokens, scoutUsage.OutputTokens)
+			totalCost := researcherCost + scoutCost
+
+			cacheHitRate := 0.0
+			if totalInputTokens > 0 {
+				cacheHitRate = (float64(totalCachedTokens) / float64(totalInputTokens)) * 100
+			}
+
+			log.Info("Researcher usage (GPT-5-Pro)",
+				"api_calls", apiCalls,
+				"input_tokens", totalInputTokens,
+				"output_tokens", totalOutputTokens,
+				"cached_tokens", totalCachedTokens,
+				"cache_hit_rate", fmt.Sprintf("%.1f%%", cacheHitRate),
+				"cost_usd", fmt.Sprintf("$%.4f", researcherCost))
+
+			log.Info("Scout usage (GPT-5.1)",
+				"api_calls", scoutUsage.Calls,
+				"input_tokens", scoutUsage.InputTokens,
+				"output_tokens", scoutUsage.OutputTokens,
+				"cost_usd", fmt.Sprintf("$%.4f", scoutCost))
+
+			log.Info("Total cost", "usd", fmt.Sprintf("$%.4f", totalCost))
+
+			return AnalysisResult{
+				Text:       text,
+				ResponseID: response.ID,
+			}, nil
 		}
 
 		// Execute tool calls
 		toolOutputs := make(responses.ResponseInputParam, 0, len(toolCalls))
 		for _, toolCall := range toolCalls {
-			log.Printf("Executing tool: name=%s id=%s args_len=%d", toolCall.Name, toolCall.ID, len(toolCall.Arguments))
+			log.Info("Executing tool", "tool", toolCall.Name, "args", toolCall.Arguments)
 			result, err := c.executeFunction(ctx, toolCall.Name, toolCall.Arguments)
 			if err != nil {
-				log.Printf("Tool execution error: %v", err)
+				log.Warn("Tool execution error", "tool", toolCall.Name, "error", err)
 				result = fmt.Sprintf("Error: %v", err)
 			} else {
-				log.Printf("Tool execution success: result_len=%d", len(result))
+				log.Info("Tool execution success", "tool", toolCall.Name, "result_bytes", len(result))
 			}
 
 			toolOutputs = append(toolOutputs, responses.ResponseInputItemParamOfFunctionCallOutput(toolCall.ID, result))
 		}
 
-		// Continue the response with tool outputs
-		log.Printf("Continuing with %d tool outputs", len(toolOutputs))
-		params = responses.ResponseNewParams{
+		log.Debug("Continuing with tool outputs", "count", len(toolOutputs))
+		params := responses.ResponseNewParams{
 			Model:              defaultModel,
 			PreviousResponseID: openai.Opt(response.ID),
 			Input: responses.ResponseNewParamsInputUnion{
@@ -192,141 +185,240 @@ func (c *DeepAnalysisClient) Handle(ctx context.Context, request mcp.CallToolReq
 
 		response, err = c.client.Responses.New(ctx, params)
 		if err != nil {
-			log.Printf("ERROR: Follow-up API call failed: %v", err)
-			return mcp.NewToolResultError(fmt.Sprintf("OpenAI API error: %v", err)), nil
+			log.Error("Follow-up API call failed", "error", err)
+			return AnalysisResult{}, fmt.Errorf("OpenAI API error: %w", err)
 		}
 
-		// Update response ID
-		if conversationID != "" {
-			c.setRespID(conversationID, response.ID)
-		}
-		log.Printf("Updated response: id=%s status=%s", response.ID, response.Status)
+		apiCalls++
+		totalInputTokens += response.Usage.InputTokens
+		totalOutputTokens += response.Usage.OutputTokens
+		totalCachedTokens += response.Usage.InputTokensDetails.CachedTokens
+
+		log.Debug("Received follow-up response", "id", response.ID, "status", response.Status,
+			"input_tokens", response.Usage.InputTokens,
+			"output_tokens", response.Usage.OutputTokens,
+			"cached_tokens", response.Usage.InputTokensDetails.CachedTokens)
 	}
 
-	log.Printf("ERROR: Max iterations (%d) reached", maxIterations)
-	return mcp.NewToolResultError("Max function call iterations reached"), nil
+	log.Error("Max iterations reached", "max", maxIterations)
+	return AnalysisResult{}, fmt.Errorf("max function call iterations (%d) reached", maxIterations)
 }
 
-// getRespID safely retrieves a response ID for a conversation
-func (c *DeepAnalysisClient) getRespID(conversationID string) string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.conv[conversationID]
-}
-
-// setRespID safely stores a response ID for a conversation
-func (c *DeepAnalysisClient) setRespID(conversationID, responseID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.conv[conversationID] = responseID
-}
-
-// clearRespID safely clears a conversation's response ID
-func (c *DeepAnalysisClient) clearRespID(conversationID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.conv, conversationID)
-}
-
-// buildTools defines the tools available to the model
+// buildTools defines the three high-level tools for the researcher
 func (c *DeepAnalysisClient) buildTools() []responses.ToolUnionParam {
 	return []responses.ToolUnionParam{
 		responses.ToolParamOfFunction(
-			"read_file",
+			"find_files",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path": map[string]any{
+					"query": map[string]any{
 						"type":        "string",
-						"description": "Path to the file to read (supports ~ for home directory)",
+						"description": "Natural language description of what files to find. Examples: 'CFR trainer tests', 'all zig files', 'error handling code', 'main entry point', 'configuration files'",
 						"minLength":   1,
 					},
+					"paths": map[string]any{
+						"type":        "array",
+						"description": "Optional directories to search within. Defaults to entire project.",
+						"items": map[string]any{
+							"type": "string",
+						},
+						"default": []string{},
+					},
 				},
-				"required":             []string{"path"},
+				"required":             []string{"query", "paths"},
 				"additionalProperties": false,
 			},
-			true, // strict
+			true,
 		),
 		responses.ToolParamOfFunction(
-			"grep_files",
+			"summarize_files",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"pattern": map[string]any{
-						"type":        "string",
-						"description": "Regular expression pattern to search for",
-						"minLength":   1,
+					"paths": map[string]any{
+						"type":        "array",
+						"description": "List of file paths to summarize",
+						"items": map[string]any{
+							"type": "string",
+						},
+						"minItems": 1,
 					},
-					"path": map[string]any{
+					"focus": map[string]any{
 						"type":        "string",
-						"description": "File path or glob pattern (e.g., '*.go', 'src/*.js') using shell-style wildcards (* and ?)",
-						"minLength":   1,
-					},
-					"ignore_case": map[string]any{
-						"type":        "boolean",
-						"description": "Perform case-insensitive search",
-						"default":     false,
+						"description": "Optional focus for the summaries. Examples: 'error handling patterns', 'public API', 'test coverage', 'dependencies'",
+						"default":     "",
 					},
 				},
-				"required":             []string{"pattern", "path", "ignore_case"},
+				"required":             []string{"paths", "focus"},
 				"additionalProperties": false,
 			},
-			true, // strict
+			true,
 		),
 		responses.ToolParamOfFunction(
-			"glob_files",
+			"read_files",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"pattern": map[string]any{
-						"type":        "string",
-						"description": "Glob pattern (e.g., '**/*.go', 'internal/**/test_*.go', '*.{js,ts}'). Use ** for recursive matching, * for files/dirs, ? for single char.",
-						"minLength":   1,
+					"paths": map[string]any{
+						"type":        "array",
+						"description": "List of file paths to read in full",
+						"items": map[string]any{
+							"type": "string",
+						},
+						"minItems": 1,
 					},
 				},
-				"required":             []string{"pattern"},
+				"required":             []string{"paths"},
 				"additionalProperties": false,
 			},
-			true, // strict
+			true,
 		),
 	}
 }
 
 // executeFunction executes a function call requested by the model
 func (c *DeepAnalysisClient) executeFunction(ctx context.Context, name, argsJSON string) (string, error) {
+	cacheKey := name + "|" + argsJSON
+	if cached, ok := c.getCachedToolOutput(cacheKey); ok {
+		log.Debug("Tool cache hit", "tool", name)
+		return cached, nil
+	}
+
+	var result string
+	var err error
+
 	switch name {
-	case "read_file":
+	case "find_files":
 		var args struct {
-			Path string `json:"path"`
+			Query string   `json:"query"`
+			Paths []string `json:"paths"`
 		}
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 			return "", fmt.Errorf("invalid arguments: %w", err)
 		}
-		return c.fileOps.ReadFile(ctx, args.Path)
+		findResult, err := c.scout.FindFiles(ctx, args.Query, args.Paths)
+		if err != nil {
+			return "", err
+		}
+		result = formatFindFilesResult(findResult)
 
-	case "grep_files":
+	case "summarize_files":
 		var args struct {
-			Pattern    string `json:"pattern"`
-			Path       string `json:"path"`
-			IgnoreCase bool   `json:"ignore_case"`
+			Paths []string `json:"paths"`
+			Focus string   `json:"focus"`
 		}
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 			return "", fmt.Errorf("invalid arguments: %w", err)
 		}
-		return c.fileOps.GrepFiles(ctx, args.Pattern, args.Path, args.IgnoreCase)
+		sumResult, err := c.scout.SummarizeFiles(ctx, args.Paths, args.Focus)
+		if err != nil {
+			return "", err
+		}
+		result = formatSummarizeFilesResult(sumResult)
 
-	case "glob_files":
+	case "read_files":
 		var args struct {
-			Pattern string `json:"pattern"`
+			Paths []string `json:"paths"`
 		}
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 			return "", fmt.Errorf("invalid arguments: %w", err)
 		}
-		return c.fileOps.GlobFiles(ctx, args.Pattern)
+		readResult, err := c.scout.ReadFiles(ctx, args.Paths, nil)
+		if err != nil {
+			return "", err
+		}
+		result = formatReadFilesResult(readResult)
 
 	default:
 		return "", fmt.Errorf("unknown function: %s", name)
 	}
+
+	if err == nil && result != "" {
+		c.setCachedToolOutput(cacheKey, result)
+	}
+	return result, err
+}
+
+func formatFindFilesResult(r *agent.FindFilesResult) string {
+	if len(r.Files) == 0 {
+		return "No files found matching the query."
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d files (%s total):\n\n", len(r.Files), formatBytes(r.TotalBytes)))
+	for _, f := range r.Files {
+		sizeStr := formatBytes(f.Size)
+		if f.Context != "" {
+			sb.WriteString(fmt.Sprintf("- %s (%s): %s\n", f.Path, sizeStr, f.Context))
+		} else {
+			sb.WriteString(fmt.Sprintf("- %s (%s)\n", f.Path, sizeStr))
+		}
+	}
+	if r.Notes != "" {
+		sb.WriteString(fmt.Sprintf("\nNotes: %s\n", r.Notes))
+	}
+	return sb.String()
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func formatSummarizeFilesResult(r *agent.SummarizeFilesResult) string {
+	if len(r.Summaries) == 0 {
+		return "No summaries generated."
+	}
+
+	var sb strings.Builder
+	for _, s := range r.Summaries {
+		sb.WriteString(fmt.Sprintf("## %s\n\n%s\n\n", s.Path, s.Summary))
+	}
+	return sb.String()
+}
+
+func formatReadFilesResult(r *agent.ReadFilesResult) string {
+	if len(r.Files) == 0 {
+		return "No files read."
+	}
+
+	var sb strings.Builder
+	for _, f := range r.Files {
+		sb.WriteString(fmt.Sprintf("## %s\n\n", f.Path))
+		if f.Error != "" {
+			sb.WriteString(fmt.Sprintf("Error: %s\n\n", f.Error))
+		} else {
+			sb.WriteString("```\n")
+			sb.WriteString(f.Content)
+			sb.WriteString("\n```\n\n")
+			if f.Truncated {
+				sb.WriteString("(file truncated)\n\n")
+			}
+		}
+	}
+	return sb.String()
+}
+
+func (c *DeepAnalysisClient) getCachedToolOutput(key string) (string, bool) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	val, ok := c.toolCache[key]
+	return val, ok
+}
+
+func (c *DeepAnalysisClient) setCachedToolOutput(key, val string) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	c.toolCache[key] = val
 }
 
 // ToolCall represents a function tool call
@@ -340,16 +432,16 @@ type ToolCall struct {
 func extractToolCalls(response *responses.Response) []ToolCall {
 	var toolCalls []ToolCall
 
-	log.Printf("Extracting tool calls from %d output items", len(response.Output))
+	log.Debug("Extracting tool calls", "output_items", len(response.Output))
 	for i, item := range response.Output {
-		log.Printf("Output item %d: type=%s", i, item.Type)
+		log.Debug("Processing output item", "index", i, "type", item.Type)
 		if item.Type == "function_call" {
 			toolCalls = append(toolCalls, ToolCall{
 				ID:        item.CallID,
 				Name:      item.Name,
 				Arguments: item.Arguments,
 			})
-			log.Printf("Found function call: name=%s id=%s", item.Name, item.CallID)
+			log.Debug("Found function call", "name", item.Name, "id", item.CallID)
 		}
 	}
 
@@ -360,16 +452,15 @@ func extractToolCalls(response *responses.Response) []ToolCall {
 func extractTextContent(response *responses.Response) string {
 	var textParts []string
 
-	log.Printf("Extracting text content from %d output items", len(response.Output))
+	log.Debug("Extracting text content", "output_items", len(response.Output))
 	for i, item := range response.Output {
-		log.Printf("Output item %d: type=%s content_items=%d", i, item.Type, len(item.Content))
+		log.Debug("Processing output item", "index", i, "type", item.Type, "content_items", len(item.Content))
 		if item.Type == "message" {
 			for j, contentItem := range item.Content {
-				log.Printf("  Content item %d: type=%s", j, contentItem.Type)
-				// The Responses API uses "output_text" not "text"
+				log.Debug("Processing content item", "index", j, "type", contentItem.Type)
 				if contentItem.Type == "text" || contentItem.Type == "output_text" {
 					textParts = append(textParts, contentItem.Text)
-					log.Printf("  Found text: len=%d", len(contentItem.Text))
+					log.Debug("Found text content", "length", len(contentItem.Text))
 				}
 			}
 		}
@@ -383,86 +474,111 @@ func extractTextContent(response *responses.Response) string {
 		result += part
 	}
 
-	log.Printf("Extracted %d text parts, total length=%d", len(textParts), len(result))
+	log.Debug("Extracted text", "parts", len(textParts), "total_length", len(result))
 	return result
 }
 
-// joinStrings joins strings with a separator
-func joinStrings(parts []string, sep string) string {
-	result := ""
-	for i, part := range parts {
-		if i > 0 {
-			result += sep
-		}
-		result += part
-	}
-	return result
-}
-
-// buildSystemPrompt creates the system prompt
-func buildSystemPrompt() string {
+// buildSystemPrompt creates the system prompt for the researcher
+func (c *DeepAnalysisClient) buildSystemPrompt() string {
 	return `You are an expert deep analysis AI consulted for the most challenging and complex problems.
 
-Your role is to provide deep, systematic analysis through multi-step reasoning:
+You will receive a markdown document containing:
+- The current task or question
+- Context and background information
+- Previous analysis and conversation history (if any)
 
-1. **Context Gathering**: FIRST, proactively use your tools to gather relevant information:
-   - Read files mentioned in the context or task
-   - Search for related code, configuration, or documentation
-   - Understand the full picture before forming conclusions
-   
-2. **Problem Decomposition**: Break down complex problems into manageable components
+Your role is to provide deep, systematic analysis through multi-step reasoning.
 
-3. **Hypothesis Generation**: Form clear theories about root causes or solutions based on evidence
+## Available Tools
 
-4. **Systematic Investigation**: Work through problems methodically, step by step
+You have three tools for exploring the codebase. Use them in order: find → summarize → read.
 
-5. **Confidence Assessment**: Honestly evaluate certainty levels at each stage
+### 1. find_files(query, paths)
+Discover files matching natural language intent. Returns file paths with sizes.
+- query: Describe what you're looking for
+- paths: Optional directories to search within
 
-6. **Actionable Recommendations**: Provide concrete, specific next steps
+Example: find_files("error handling code", ["src"])
+Returns: List of matching files with sizes (e.g., "src/errors.zig (4.2KB)")
 
-When analyzing problems:
-- **Start by gathering context** - Read relevant files, search for patterns, understand the codebase
-- Think deeply and systematically
-- Question assumptions and verify them with evidence
-- Consider multiple perspectives
-- Identify gaps in understanding and fill them proactively
-- Provide clear, actionable insights
-- Acknowledge uncertainty when appropriate
-- Suggest concrete next steps with examples
+### 2. summarize_files(paths, focus)  
+Get AI-generated summaries of file contents. CHEAP - use liberally for triage.
+- paths: List of file paths to summarize
+- focus: Optional focus area (e.g., "public API", "error handling")
 
-Your responses should be:
-- **Evidence-based**: Always gather information with your tools before concluding
-- **Thorough**: Cover all relevant aspects
-- **Clear**: Easy to understand and act upon
-- **Structured**: Organized logically
-- **Actionable**: Include concrete recommendations with code examples when relevant
+Example: summarize_files(["src/engine.zig", "src/player.zig"], "game state management")
+Returns: 2-4 sentence summaries of each file focused on the specified area.
 
-**Available Tools**:
-You have access to the following tools to gather information:
+**Use this to decide which files need full reads.** Don't skip this step.
 
-1. **glob_files(pattern)**: Discover files matching a pattern
-   - Examples: "**/*.go" (all Go files), "internal/**/test_*.go" (test files in internal), "*.{js,ts}" (JS/TS files)
-   - Use this FIRST when you don't know exact file paths
-   - Directories marked with trailing /
+### 3. read_files(paths)
+Read full file contents. EXPENSIVE - use sparingly.
+- paths: List of file paths to read
+- **LIMIT: Max 10 files or 200KB per call**
 
-2. **read_file(path)**: Read the contents of any file
-   - Use after discovering files with glob_files
-   - Supports ~ for home directory
+If you exceed the limit, you'll get an error asking you to use summarize_files first.
 
-3. **grep_files(pattern, path, ignore_case)**: Search for regex patterns in files
-   - pattern: Regular expression to search for
-   - path: Glob pattern for files to search (e.g., "*.go", "src/**/*.js")
-   - Use to find specific code patterns across multiple files
+## Required Workflow
 
-**Attached Files**:
-Sometimes files will be pre-attached to your prompt under "Attached Files". Review these carefully as they contain the key code/config you need to analyze.
+**IMPORTANT: Follow this workflow to avoid errors and control costs.**
 
-**CRITICAL WORKFLOW** - Use these tools PROACTIVELY and FREQUENTLY:
-1. **Discover**: Use glob_files to find relevant files if you don't know exact paths
-2. **Review**: Read any pre-attached files first
-3. **Investigate**: Read additional files mentioned or discovered
-4. **Search**: Use grep_files to find patterns or references across the codebase
-5. **Verify**: Don't make assumptions - gather evidence before concluding
+1. **find_files** - Discover relevant files. Note the sizes returned.
+2. **summarize_files** - Get summaries of found files. Use the focus parameter.
+3. **Analyze summaries** - Decide which files actually need full content.
+4. **read_files** - Read only the files you truly need (max 10 at a time).
+5. **Synthesize** - Draw conclusions based on evidence.
 
-You are being consulted because standard approaches have proven insufficient. Bring your full analytical capabilities to bear, and let the evidence guide your recommendations.`
+## Example
+
+Task: "How does error handling work in this codebase?"
+
+1. find_files("error handling") → Returns 15 files totaling 180KB
+2. summarize_files(all 15 paths, "error handling patterns") → Get quick summaries
+3. From summaries, identify 3 files that are central to error handling
+4. read_files(those 3 files) → Get full content for detailed analysis
+5. Write analysis citing specific code
+
+## Guidelines
+
+- **Always summarize before reading** when you find multiple files
+- Check file sizes from find_files - if total > 200KB, you must summarize first
+- Use the focus parameter in summarize_files to get relevant summaries
+- Make multiple smaller read_files calls rather than one large one
+- Cite specific files and line numbers in your analysis
+
+## Output Format
+
+Structure your response with:
+- Clear headings and sections
+- Code blocks with syntax highlighting
+- Bullet points for key findings
+- Numbered lists for step-by-step recommendations
+
+You are being consulted because standard approaches have proven insufficient. Bring your full analytical capabilities to bear.`
+}
+
+// estimateCost estimates the cost in USD based on model and token usage.
+// Pricing as of Jan 2025:
+// - gpt-5-pro: $10/1M input, $40/1M output
+// - gpt-5.1: $2/1M input, $8/1M output
+func estimateCost(model string, inputTokens, outputTokens int64) float64 {
+	var inputCostPer1M, outputCostPer1M float64
+
+	switch model {
+	case "gpt-5-pro":
+		inputCostPer1M = 10.0
+		outputCostPer1M = 40.0
+	case "gpt-5.1":
+		inputCostPer1M = 2.0
+		outputCostPer1M = 8.0
+	default:
+		// Conservative fallback
+		inputCostPer1M = 10.0
+		outputCostPer1M = 40.0
+	}
+
+	inputCost := (float64(inputTokens) / 1_000_000.0) * inputCostPer1M
+	outputCost := (float64(outputTokens) / 1_000_000.0) * outputCostPer1M
+
+	return inputCost + outputCost
 }
