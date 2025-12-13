@@ -1,4 +1,4 @@
-module github.com/lox/deep-analysis-mcp
+module github.com/lox/deep-analysis
 
 go 1.25.1
 

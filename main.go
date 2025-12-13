@@ -8,8 +8,8 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/log"
-	"github.com/lox/deep-analysis-mcp/internal/client"
-	"github.com/lox/deep-analysis-mcp/internal/fileops"
+	"github.com/lox/deep-analysis/internal/client"
+	"github.com/lox/deep-analysis/internal/fileops"
 )
 
 var (
@@ -17,13 +17,14 @@ var (
 )
 
 type CLI struct {
-	Input      string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
-	Output     string `help:"Path to output markdown document (defaults to input file)"`
-	Debug      bool   `help:"Enable debug logging"`
-	Continue   string `help:"Session id to continue a previous conversation" name:"continue"`
-	Reset      bool   `help:"Ignore stored session state and start a fresh conversation"`
-	ScoutModel string `help:"Model to use for scout dispatcher (default: gpt-5.1)" default:"gpt-5.1"`
-	Cwd        string `help:"Working directory for file operations (default: current directory)"`
+	Input           string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
+	Output          string `help:"Path to output markdown document (defaults to input file)"`
+	Debug           bool   `help:"Enable debug logging"`
+	Continue        string `help:"Session id to continue a previous conversation" name:"continue"`
+	Reset           bool   `help:"Ignore stored session state and start a fresh conversation"`
+	ScoutModel      string `help:"Model to use for scout dispatcher (default: gpt-5.2)" default:"gpt-5.2"`
+	ReasoningEffort string `help:"Reasoning effort for researcher: low, medium, high, xhigh (default: xhigh)" default:"xhigh" enum:"low,medium,high,xhigh"`
+	Cwd             string `help:"Working directory for file operations (default: current directory)"`
 }
 
 func (c *CLI) Run() error {
@@ -113,9 +114,10 @@ func (c *CLI) Run() error {
 
 	// Run analysis
 	ctx := context.Background()
-	log.Info("Running deep analysis", "bytes", len(document), "scout_model", c.ScoutModel)
+	log.Info("Running deep analysis", "bytes", len(document), "scout_model", c.ScoutModel, "reasoning_effort", c.ReasoningEffort)
 	result, err := cl.Analyze(ctx, document, client.AnalysisOptions{
 		PreviousResponseID: previousResponseID,
+		ReasoningEffort:    c.ReasoningEffort,
 	})
 	if err != nil {
 		return fmt.Errorf("analysis failed: %w", err)
@@ -153,7 +155,7 @@ func main() {
 	var cli CLI
 	ctx := kong.Parse(&cli,
 		kong.Name("deep-analysis"),
-		kong.Description("Deep analysis tool powered by GPT-5-Pro with file operation capabilities"),
+		kong.Description("Deep analysis tool powered by GPT-5.2-Pro with file operation capabilities"),
 		kong.UsageOnError(),
 		kong.Vars{
 			"version": version,

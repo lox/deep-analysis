@@ -8,14 +8,14 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
-	"github.com/lox/deep-analysis-mcp/internal/agent"
+	"github.com/lox/deep-analysis/internal/agent"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
 )
 
 const (
-	defaultModel  = "gpt-5-pro"
+	defaultModel  = "gpt-5.2-pro"
 	maxIterations = 50
 )
 
@@ -33,7 +33,8 @@ type DeepAnalysisClient struct {
 // AnalysisOptions controls request behavior.
 type AnalysisOptions struct {
 	PreviousResponseID string
-	ScoutModel         string // Model to use for scout dispatcher (default: gpt-5.1)
+	ScoutModel         string // Model to use for scout dispatcher (default: gpt-5.2)
+	ReasoningEffort    string // Reasoning effort: low, medium, high, xhigh (default: xhigh)
 }
 
 // AnalysisResult contains the final model output and metadata.
@@ -81,6 +82,7 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 		Instructions:   openai.Opt(c.buildSystemPrompt()),
 		Tools:          c.tools,
 		PromptCacheKey: openai.Opt(cacheKey),
+		Reasoning:      buildReasoningParam(opts.ReasoningEffort),
 	}
 
 	inputItems := responses.ResponseInputParam{
@@ -501,7 +503,7 @@ Discover files matching natural language intent. Returns file paths with sizes.
 Example: find_files("error handling code", ["src"])
 Returns: List of matching files with sizes (e.g., "src/errors.zig (4.2KB)")
 
-### 2. summarize_files(paths, focus)  
+### 2. summarize_files(paths, focus)
 Get AI-generated summaries of file contents. CHEAP - use liberally for triage.
 - paths: List of file paths to summarize
 - focus: Optional focus area (e.g., "public API", "error handling")
@@ -558,27 +560,55 @@ You are being consulted because standard approaches have proven insufficient. Br
 }
 
 // estimateCost estimates the cost in USD based on model and token usage.
-// Pricing as of Jan 2025:
-// - gpt-5-pro: $10/1M input, $40/1M output
-// - gpt-5.1: $2/1M input, $8/1M output
+// Pricing as of Dec 2025:
+// - gpt-5.2-pro: $21/1M input, $168/1M output
+// - gpt-5.2: $1.75/1M input, $14/1M output
+// - gpt-5-pro: $15/1M input, $120/1M output
+// - gpt-5.1: $1.25/1M input, $10/1M output
 func estimateCost(model string, inputTokens, outputTokens int64) float64 {
 	var inputCostPer1M, outputCostPer1M float64
 
 	switch model {
+	case "gpt-5.2-pro":
+		inputCostPer1M = 21.0
+		outputCostPer1M = 168.0
+	case "gpt-5.2":
+		inputCostPer1M = 1.75
+		outputCostPer1M = 14.0
 	case "gpt-5-pro":
-		inputCostPer1M = 10.0
-		outputCostPer1M = 40.0
+		inputCostPer1M = 15.0
+		outputCostPer1M = 120.0
 	case "gpt-5.1":
-		inputCostPer1M = 2.0
-		outputCostPer1M = 8.0
+		inputCostPer1M = 1.25
+		outputCostPer1M = 10.0
 	default:
-		// Conservative fallback
-		inputCostPer1M = 10.0
-		outputCostPer1M = 40.0
+		// Conservative fallback to gpt-5.2-pro pricing
+		inputCostPer1M = 21.0
+		outputCostPer1M = 168.0
 	}
 
 	inputCost := (float64(inputTokens) / 1_000_000.0) * inputCostPer1M
 	outputCost := (float64(outputTokens) / 1_000_000.0) * outputCostPer1M
 
 	return inputCost + outputCost
+}
+
+// buildReasoningParam creates a ReasoningParam from a string effort level.
+// Supports: low, medium, high, xhigh. Defaults to high if unrecognized.
+func buildReasoningParam(effort string) responses.ReasoningParam {
+	var e responses.ReasoningEffort
+	switch effort {
+	case "low":
+		e = responses.ReasoningEffortLow
+	case "medium":
+		e = responses.ReasoningEffortMedium
+	case "high":
+		e = responses.ReasoningEffortHigh
+	case "xhigh":
+		// SDK doesn't have xhigh constant yet, but API accepts it
+		e = responses.ReasoningEffort("xhigh")
+	default:
+		e = responses.ReasoningEffortHigh
+	}
+	return responses.ReasoningParam{Effort: e}
 }

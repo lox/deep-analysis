@@ -1,10 +1,12 @@
 # Deep Analysis CLI
 
-A CLI tool for systematic deep analysis of markdown documents and codebases using a two-tier AI architecture: GPT-5-Pro for reasoning and GPT-5.1 for file discovery.
+A CLI tool for systematic deep analysis of markdown documents and codebases using a two-tier AI architecture: GPT-5.2-Pro for reasoning and GPT-5.2 for file discovery.
+
+> 🤖  **Note:** This project was ["vibe engineered"](https://simonwillison.net/2025/Oct/7/vibe-engineering/) with [Amp](https://ampcode.com) and Claude Opus 4.5 and others as part of my ongoing effort to demonstrate that AI-assisted development can produce high-quality software when paired with rigorous design documentation, comprehensive tests, and careful human review.
 
 ## Features
 
-- **Two-Tier Architecture**: GPT-5-Pro focuses on reasoning while GPT-5.1 handles file discovery
+- **Two-Tier Architecture**: GPT-5.2-Pro focuses on reasoning while GPT-5.2 handles file discovery
 - **Three High-Level Tools**: `find_files`, `summarize_files`, `read_files` with cost controls
 - **Session Continuity**: Continue conversations with `--continue <session-id>`
 - **Cost Tracking**: Separate usage reporting for researcher and scout models
@@ -12,7 +14,7 @@ A CLI tool for systematic deep analysis of markdown documents and codebases usin
 ## Prerequisites
 
 - Go 1.25.1 or later
-- [OpenAI API Key](https://platform.openai.com/) with access to GPT-5-Pro and GPT-5.1
+- [OpenAI API Key](https://platform.openai.com/) with access to GPT-5.2-Pro and GPT-5.2
 
 ## Installation
 
@@ -74,7 +76,8 @@ The AI will see your previous analysis and focus on new questions.
 | `--continue` | Session ID to continue a previous conversation |
 | `--reset` | Start fresh, ignoring stored session state |
 | `--cwd` | Working directory for file operations |
-| `--scout-model` | Model for scout dispatcher (default: gpt-5.1) |
+| `--scout-model` | Model for scout dispatcher (default: gpt-5.2) |
+| `--reasoning-effort` | Reasoning effort: low, medium, high, xhigh (default: xhigh) |
 | `--debug` | Enable debug logging |
 
 ## How It Works
@@ -82,11 +85,11 @@ The AI will see your previous analysis and focus on new questions.
 ### Two-Tier Architecture
 
 ```
-Researcher (GPT-5-Pro)     →  Reasoning, analysis, conclusions
+Researcher (GPT-5.2-Pro)   →  Reasoning, analysis, conclusions
         ↓
     find_files / summarize_files / read_files
         ↓
-Scout (GPT-5.1)            →  Translates queries to glob/grep
+Scout (GPT-5.2)            →  Translates queries to glob/grep
         ↓
 File System                →  Actual file access
 ```
@@ -120,9 +123,9 @@ The researcher follows: **find → summarize → read**
 Each run reports usage for both models:
 
 ```
-INFO Researcher usage (GPT-5-Pro) api_calls=5 input_tokens=12000 output_tokens=3000 cost_usd=$0.2400
-INFO Scout usage (GPT-5.1)        api_calls=8 input_tokens=45000 output_tokens=800  cost_usd=$0.0964
-INFO Total cost                   usd=$0.3364
+INFO Researcher usage (GPT-5.2-Pro) api_calls=5 input_tokens=12000 output_tokens=3000 cost_usd=$0.7560
+INFO Scout usage (GPT-5.2)         api_calls=8 input_tokens=45000 output_tokens=800  cost_usd=$0.0899
+INFO Total cost                   usd=$0.8459
 ```
 
 ## Development
