@@ -1,0 +1,4 @@
+[tools]
+go = "1.25.3"
+"aqua:go-task/task" = "3.48.0"
+"aqua:golangci/golangci-lint" = "2.5.0"
