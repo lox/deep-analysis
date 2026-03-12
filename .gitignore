@@ -1,6 +1,7 @@
 # Binaries
 bin/
 dist/
+.hermit/
 *.exe
 *.dll
 *.so
@@ -20,6 +21,8 @@ go.work.sum
 .env
 .env.local
 .envrc
+mise.local.toml
+.mise.local.toml
 
 # IDE
 .vscode/

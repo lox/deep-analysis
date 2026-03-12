@@ -29,10 +29,11 @@ plans/
 ## Build, Test, and Lint
 
 ```bash
-task build          # Build to dist/deep-analysis
-task test           # Run tests
-task lint           # Run golangci-lint
-go build -o ~/bin/deep-analysis .  # Install to ~/bin
+mise install
+mise exec -- task build          # Build to dist/deep-analysis
+mise exec -- task test           # Run tests
+mise exec -- task lint           # Run golangci-lint
+mise exec -- go build -o ~/bin/deep-analysis .  # Install to ~/bin
 ```
 
 ## Usage
@@ -53,7 +54,7 @@ deep-analysis --reasoning-effort high task.md
 
 ## Coding Style
 
-- Go 1.25.1; format with `gofmt`; lint must pass
+- Go 1.25.3 via `mise`; format with `gofmt`; lint must pass
 - Accept `context.Context` first in functions
 - Return wrapped errors with `%w`
 - Log with `charmbracelet/log`
@@ -81,7 +82,7 @@ deep-analysis --reasoning-effort high task.md
 ## Commit Guidelines
 
 - Format: `feat:`, `fix:`, or `chore:`
-- Run `task build`, `task test`, `task lint` before committing
+- Run `mise exec -- task build`, `mise exec -- task test`, `mise exec -- task lint` before committing
 - One logical change per commit
 
 ## Configuration
