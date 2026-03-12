@@ -22,7 +22,8 @@ type CLI struct {
 	Debug           bool   `help:"Enable debug logging"`
 	Continue        string `help:"Session id to continue a previous conversation" name:"continue"`
 	Reset           bool   `help:"Ignore stored session state and start a fresh conversation"`
-	ScoutModel      string `help:"Model to use for scout dispatcher (default: gpt-5.2)" default:"gpt-5.2"`
+	ResearcherModel string `help:"Model to use for researcher (default: gpt-5.4-pro)" default:"gpt-5.4-pro"`
+	ScoutModel      string `help:"Model to use for scout dispatcher (default: gpt-5.4)" default:"gpt-5.4"`
 	ReasoningEffort string `help:"Reasoning effort for researcher: low, medium, high, xhigh (default: xhigh)" default:"xhigh" enum:"low,medium,high,xhigh"`
 	Cwd             string `help:"Working directory for file operations (default: current directory)"`
 }
@@ -74,7 +75,7 @@ func (c *CLI) Run() error {
 
 	// Initialize client with scout dispatcher
 	f := fileops.New()
-	cl := client.New(apiKey, f, c.ScoutModel)
+	cl := client.New(apiKey, f, c.ResearcherModel, c.ScoutModel)
 
 	// Prepare session state
 	store, err := client.NewSessionStore("deep-analysis")
@@ -114,7 +115,11 @@ func (c *CLI) Run() error {
 
 	// Run analysis
 	ctx := context.Background()
-	log.Info("Running deep analysis", "bytes", len(document), "scout_model", c.ScoutModel, "reasoning_effort", c.ReasoningEffort)
+	log.Info("Running deep analysis",
+		"bytes", len(document),
+		"researcher_model", c.ResearcherModel,
+		"scout_model", c.ScoutModel,
+		"reasoning_effort", c.ReasoningEffort)
 	result, err := cl.Analyze(ctx, document, client.AnalysisOptions{
 		PreviousResponseID: previousResponseID,
 		ReasoningEffort:    c.ReasoningEffort,
@@ -155,7 +160,7 @@ func main() {
 	var cli CLI
 	ctx := kong.Parse(&cli,
 		kong.Name("deep-analysis"),
-		kong.Description("Deep analysis tool powered by GPT-5.2-Pro with file operation capabilities"),
+		kong.Description(fmt.Sprintf("Deep analysis tool powered by %s with file operation capabilities", client.DefaultResearcherModel)),
 		kong.UsageOnError(),
 		kong.Vars{
 			"version": version,
