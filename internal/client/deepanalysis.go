@@ -15,25 +15,26 @@ import (
 )
 
 const (
-	defaultModel  = "gpt-5.2-pro"
-	maxIterations = 50
+	DefaultResearcherModel = "gpt-5.4-pro"
+	maxIterations          = 50
 )
 
 // DeepAnalysisClient handles communication with OpenAI's Responses API
 type DeepAnalysisClient struct {
-	apiKey    string
-	client    *openai.Client
-	fileOps   agent.FileOps
-	scout     *agent.Scout
-	tools     []responses.ToolUnionParam
-	toolCache map[string]string
-	cacheMu   sync.Mutex
+	apiKey          string
+	client          *openai.Client
+	fileOps         agent.FileOps
+	scout           *agent.Scout
+	researcherModel string
+	scoutModel      string
+	tools           []responses.ToolUnionParam
+	toolCache       map[string]string
+	cacheMu         sync.Mutex
 }
 
 // AnalysisOptions controls request behavior.
 type AnalysisOptions struct {
 	PreviousResponseID string
-	ScoutModel         string // Model to use for scout dispatcher (default: gpt-5.2)
 	ReasoningEffort    string // Reasoning effort: low, medium, high, xhigh (default: xhigh)
 }
 
@@ -43,22 +44,27 @@ type AnalysisResult struct {
 	ResponseID string
 }
 
-// New creates a new DeepAnalysisClient instance
-func New(apiKey string, fileOps agent.FileOps, scoutModel string) *DeepAnalysisClient {
+// New creates a new DeepAnalysisClient instance.
+func New(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string) *DeepAnalysisClient {
 	client := openai.NewClient(
 		option.WithAPIKey(apiKey),
 	)
 
+	if researcherModel == "" {
+		researcherModel = DefaultResearcherModel
+	}
 	if scoutModel == "" {
 		scoutModel = agent.DefaultScoutModel
 	}
 
 	c := &DeepAnalysisClient{
-		apiKey:    apiKey,
-		client:    &client,
-		fileOps:   fileOps,
-		scout:     agent.NewScout(apiKey, scoutModel, fileOps),
-		toolCache: make(map[string]string),
+		apiKey:          apiKey,
+		client:          &client,
+		fileOps:         fileOps,
+		scout:           agent.NewScout(apiKey, scoutModel, fileOps),
+		researcherModel: researcherModel,
+		scoutModel:      scoutModel,
+		toolCache:       make(map[string]string),
 	}
 	c.tools = c.buildTools()
 
@@ -78,7 +84,7 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 	cacheKey := "deep-analysis-v3"
 
 	params := responses.ResponseNewParams{
-		Model:          defaultModel,
+		Model:          c.researcherModel,
 		Instructions:   openai.Opt(c.buildSystemPrompt()),
 		Tools:          c.tools,
 		PromptCacheKey: openai.Opt(cacheKey),
@@ -95,7 +101,7 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 		params.PreviousResponseID = openai.Opt(opts.PreviousResponseID)
 	}
 
-	log.Debug("Calling OpenAI Responses API", "model", defaultModel, "previous_response_id", opts.PreviousResponseID)
+	log.Debug("Calling OpenAI Responses API", "model", c.researcherModel, "previous_response_id", opts.PreviousResponseID)
 	response, err := c.client.Responses.New(ctx, params)
 	if err != nil {
 		log.Error("OpenAI API call failed", "error", err)
@@ -129,8 +135,8 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 			scoutUsage := c.scout.Usage()
 
 			// Calculate costs
-			researcherCost := estimateCost(defaultModel, totalInputTokens, totalOutputTokens)
-			scoutCost := estimateCost(agent.DefaultScoutModel, scoutUsage.InputTokens, scoutUsage.OutputTokens)
+			researcherCost := estimateCost(c.researcherModel, totalInputTokens, totalCachedTokens, totalOutputTokens)
+			scoutCost := estimateCost(c.scoutModel, scoutUsage.InputTokens, 0, scoutUsage.OutputTokens)
 			totalCost := researcherCost + scoutCost
 
 			cacheHitRate := 0.0
@@ -138,7 +144,8 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 				cacheHitRate = (float64(totalCachedTokens) / float64(totalInputTokens)) * 100
 			}
 
-			log.Info("Researcher usage (GPT-5-Pro)",
+			log.Info("Researcher usage",
+				"model", c.researcherModel,
 				"api_calls", apiCalls,
 				"input_tokens", totalInputTokens,
 				"output_tokens", totalOutputTokens,
@@ -146,7 +153,8 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 				"cache_hit_rate", fmt.Sprintf("%.1f%%", cacheHitRate),
 				"cost_usd", fmt.Sprintf("$%.4f", researcherCost))
 
-			log.Info("Scout usage (GPT-5.1)",
+			log.Info("Scout usage",
+				"model", c.scoutModel,
 				"api_calls", scoutUsage.Calls,
 				"input_tokens", scoutUsage.InputTokens,
 				"output_tokens", scoutUsage.OutputTokens,
@@ -177,7 +185,7 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 
 		log.Debug("Continuing with tool outputs", "count", len(toolOutputs))
 		params := responses.ResponseNewParams{
-			Model:              defaultModel,
+			Model:              c.researcherModel,
 			PreviousResponseID: openai.Opt(response.ID),
 			Input: responses.ResponseNewParamsInputUnion{
 				OfInputItemList: toolOutputs,
@@ -348,17 +356,17 @@ func formatFindFilesResult(r *agent.FindFilesResult) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d files (%s total):\n\n", len(r.Files), formatBytes(r.TotalBytes)))
+	fmt.Fprintf(&sb, "Found %d files (%s total):\n\n", len(r.Files), formatBytes(r.TotalBytes))
 	for _, f := range r.Files {
 		sizeStr := formatBytes(f.Size)
 		if f.Context != "" {
-			sb.WriteString(fmt.Sprintf("- %s (%s): %s\n", f.Path, sizeStr, f.Context))
+			fmt.Fprintf(&sb, "- %s (%s): %s\n", f.Path, sizeStr, f.Context)
 		} else {
-			sb.WriteString(fmt.Sprintf("- %s (%s)\n", f.Path, sizeStr))
+			fmt.Fprintf(&sb, "- %s (%s)\n", f.Path, sizeStr)
 		}
 	}
 	if r.Notes != "" {
-		sb.WriteString(fmt.Sprintf("\nNotes: %s\n", r.Notes))
+		fmt.Fprintf(&sb, "\nNotes: %s\n", r.Notes)
 	}
 	return sb.String()
 }
@@ -383,7 +391,7 @@ func formatSummarizeFilesResult(r *agent.SummarizeFilesResult) string {
 
 	var sb strings.Builder
 	for _, s := range r.Summaries {
-		sb.WriteString(fmt.Sprintf("## %s\n\n%s\n\n", s.Path, s.Summary))
+		fmt.Fprintf(&sb, "## %s\n\n%s\n\n", s.Path, s.Summary)
 	}
 	return sb.String()
 }
@@ -395,9 +403,9 @@ func formatReadFilesResult(r *agent.ReadFilesResult) string {
 
 	var sb strings.Builder
 	for _, f := range r.Files {
-		sb.WriteString(fmt.Sprintf("## %s\n\n", f.Path))
+		fmt.Fprintf(&sb, "## %s\n\n", f.Path)
 		if f.Error != "" {
-			sb.WriteString(fmt.Sprintf("Error: %s\n\n", f.Error))
+			fmt.Fprintf(&sb, "Error: %s\n\n", f.Error)
 		} else {
 			sb.WriteString("```\n")
 			sb.WriteString(f.Content)
@@ -560,37 +568,54 @@ You are being consulted because standard approaches have proven insufficient. Br
 }
 
 // estimateCost estimates the cost in USD based on model and token usage.
-// Pricing as of Dec 2025:
-// - gpt-5.2-pro: $21/1M input, $168/1M output
-// - gpt-5.2: $1.75/1M input, $14/1M output
+// Pricing as of Mar 2026:
+// - gpt-5.4-pro: $30/1M input, $180/1M output
+// - gpt-5.4: $2.50/1M input, $0.25/1M cached input, $15/1M output
 // - gpt-5-pro: $15/1M input, $120/1M output
-// - gpt-5.1: $1.25/1M input, $10/1M output
-func estimateCost(model string, inputTokens, outputTokens int64) float64 {
-	var inputCostPer1M, outputCostPer1M float64
-
-	switch model {
-	case "gpt-5.2-pro":
-		inputCostPer1M = 21.0
-		outputCostPer1M = 168.0
-	case "gpt-5.2":
-		inputCostPer1M = 1.75
-		outputCostPer1M = 14.0
-	case "gpt-5-pro":
-		inputCostPer1M = 15.0
-		outputCostPer1M = 120.0
-	case "gpt-5.1":
-		inputCostPer1M = 1.25
-		outputCostPer1M = 10.0
-	default:
-		// Conservative fallback to gpt-5.2-pro pricing
-		inputCostPer1M = 21.0
-		outputCostPer1M = 168.0
+// - gpt-5 / gpt-5.1: $1.25/1M input, $0.125/1M cached input, $10/1M output
+// - gpt-5-mini: $0.25/1M input, $0.025/1M cached input, $2/1M output
+// - gpt-5-nano: $0.05/1M input, $0.005/1M cached input, $0.4/1M output
+func estimateCost(model string, inputTokens, cachedInputTokens, outputTokens int64) float64 {
+	inputCostPer1M, cachedInputCostPer1M, outputCostPer1M := pricingForModel(model)
+	if cachedInputTokens < 0 {
+		cachedInputTokens = 0
+	}
+	if cachedInputTokens > inputTokens {
+		cachedInputTokens = inputTokens
 	}
 
-	inputCost := (float64(inputTokens) / 1_000_000.0) * inputCostPer1M
+	uncachedInputTokens := inputTokens - cachedInputTokens
+	inputCost := (float64(uncachedInputTokens) / 1_000_000.0) * inputCostPer1M
+	cachedInputCost := (float64(cachedInputTokens) / 1_000_000.0) * cachedInputCostPer1M
 	outputCost := (float64(outputTokens) / 1_000_000.0) * outputCostPer1M
 
-	return inputCost + outputCost
+	return inputCost + cachedInputCost + outputCost
+}
+
+func pricingForModel(model string) (inputCostPer1M, cachedInputCostPer1M, outputCostPer1M float64) {
+	normalized := strings.ToLower(model)
+
+	switch {
+	case strings.HasPrefix(normalized, "gpt-5.4-pro"):
+		return 30.0, 30.0, 180.0
+	case strings.HasPrefix(normalized, "gpt-5.4"):
+		return 2.5, 0.25, 15.0
+	case strings.HasPrefix(normalized, "gpt-5.2-pro"):
+		return 21.0, 21.0, 168.0
+	case strings.HasPrefix(normalized, "gpt-5.2"):
+		return 1.75, 1.75, 14.0
+	case strings.HasPrefix(normalized, "gpt-5-pro"):
+		return 15.0, 15.0, 120.0
+	case strings.HasPrefix(normalized, "gpt-5-mini"):
+		return 0.25, 0.025, 2.0
+	case strings.HasPrefix(normalized, "gpt-5-nano"):
+		return 0.05, 0.005, 0.4
+	case strings.HasPrefix(normalized, "gpt-5.1"), strings.HasPrefix(normalized, "gpt-5"):
+		return 1.25, 0.125, 10.0
+	default:
+		// Conservative fallback to the most expensive currently supported model.
+		return 30.0, 30.0, 180.0
+	}
 }
 
 // buildReasoningParam creates a ReasoningParam from a string effort level.

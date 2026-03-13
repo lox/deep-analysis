@@ -1,6 +1,6 @@
 # Two-Tier Analysis Plan
 
-Goal: cut cost/latency while keeping quality by having GPT-5.2-Pro focus on reasoning while GPT-5.2 handles mechanical file operations.
+Goal: cut cost/latency while keeping quality by having GPT-5.4-Pro focus on reasoning while GPT-5.4 handles mechanical file operations.
 
 ## Architecture: Scout as Tool Dispatcher
 
@@ -8,7 +8,7 @@ Instead of an upfront scout pass that guesses what files are needed, the scout a
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Researcher (GPT-5.2-Pro)                                   │
+│  Researcher (GPT-5.4-Pro)                                   │
 │  - Focuses on reasoning, strategy, analysis                 │
 │  - Decides WHAT to look for                                 │
 │  - Has 3 high-level tools                                   │
@@ -16,7 +16,7 @@ Instead of an upfront scout pass that guesses what files are needed, the scout a
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Scout Dispatcher (GPT-5.2)                                 │
+│  Scout Dispatcher (GPT-5.4)                                 │
 │  - Translates NL queries to file operations                 │
 │  - Handles HOW to find things                               │
 │  - Summarizes file contents on demand                       │
@@ -71,9 +71,9 @@ Get full file contents for detailed analysis.
 ## Why This Is Better
 
 1. **On-demand vs upfront**: Scout responds to what researcher actually needs, not predictions
-2. **Cost efficient**: GPT-5.2-Pro tokens spent on reasoning, not parsing file listings
+2. **Cost efficient**: GPT-5.4-Pro tokens spent on reasoning, not parsing file listings
 3. **Iterative**: Researcher can refine searches based on what it learns
-4. **Clear separation**: GPT-5.2-Pro = strategy/reasoning, GPT-5.2 = navigation/mechanics
+4. **Clear separation**: GPT-5.4-Pro = strategy/reasoning, GPT-5.4 = navigation/mechanics
 
 ## Implementation
 
