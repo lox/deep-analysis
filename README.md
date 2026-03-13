@@ -138,8 +138,8 @@ INFO Total cost                         usd=$1.0245
 mise run build  # Build to dist/deep-analysis
 mise run test   # Run tests
 mise run lint   # Run linter
-mise run run -- notes.md
-mise run run -- notes.md annotated.md
+mise run run notes.md
+mise run run notes.md annotated.md
 ```
 
 ## Architecture

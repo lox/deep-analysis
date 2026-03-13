@@ -28,4 +28,19 @@ run = "rm -rf dist/"
 [tasks.run]
 description = "Run deep-analysis on a markdown document"
 depends = ["build"]
-file = "scripts/mise-run.sh"
+usage = '''
+arg "<input>" env="INPUT" help="Input markdown file"
+arg "[output]" env="OUTPUT" help="Optional output markdown file"
+'''
+run = '''
+[ -n "${OPENAI_API_KEY:-}" ] || {
+  echo "Error: OPENAI_API_KEY environment variable is required" >&2
+  exit 1
+}
+
+if [ -n "${usage_output:-}" ]; then
+  exec ./dist/deep-analysis --input "${usage_input?}" --output "${usage_output}"
+fi
+
+exec ./dist/deep-analysis --input "${usage_input?}"
+'''
