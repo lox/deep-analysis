@@ -30,10 +30,10 @@ plans/
 
 ```bash
 mise install
-mise exec -- task build          # Build to dist/deep-analysis
-mise exec -- task test           # Run tests
-mise exec -- task lint           # Run golangci-lint
-mise exec -- go build -o ~/bin/deep-analysis .  # Install to ~/bin
+mise run build          # Build to dist/deep-analysis
+mise run test           # Run tests
+mise run lint           # Run golangci-lint
+go build -o ~/bin/deep-analysis .  # Install to ~/bin
 ```
 
 ## Usage
@@ -82,7 +82,7 @@ deep-analysis --reasoning-effort high task.md
 ## Commit Guidelines
 
 - Format: `feat:`, `fix:`, or `chore:`
-- Run `mise exec -- task build`, `mise exec -- task test`, `mise exec -- task lint` before committing
+- Run `mise run build`, `mise run test`, `mise run lint` before committing
 - One logical change per commit
 
 ## Configuration
