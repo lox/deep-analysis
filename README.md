@@ -32,6 +32,7 @@ mise run install
 mise run install:global
 
 # Or directly with Go if you already have it installed
+mkdir -p dist
 go build -o dist/deep-analysis .
 ```
 
