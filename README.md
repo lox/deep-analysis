@@ -25,6 +25,12 @@ mise install
 # Build the CLI with the pinned toolchain
 mise run build
 
+# Install into your Go bin dir
+mise run install
+
+# Install into ~/bin
+mise run install:global
+
 # Or directly with Go if you already have it installed
 go build -o dist/deep-analysis .
 ```
@@ -136,10 +142,12 @@ INFO Total cost                         usd=$1.0245
 
 ```bash
 mise run build  # Build to dist/deep-analysis
+mise run install  # Install to GOBIN or GOPATH/bin
+mise run install:global  # Install to ~/bin
 mise run test   # Run tests
 mise run lint   # Run linter
 mise run run notes.md
-mise run run notes.md annotated.md
+mise run run notes.md --output annotated.md
 ```
 
 ## Architecture

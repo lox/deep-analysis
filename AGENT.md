@@ -31,9 +31,10 @@ plans/
 ```bash
 mise install
 mise run build          # Build to dist/deep-analysis
+mise run install        # Install to GOBIN or GOPATH/bin
+mise run install:global # Install to ~/bin
 mise run test           # Run tests
 mise run lint           # Run golangci-lint
-go build -o ~/bin/deep-analysis .  # Install to ~/bin
 ```
 
 ## Usage

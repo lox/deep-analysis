@@ -1,12 +1,23 @@
 [tools]
 go = "1.25.3"
 
+[settings]
+go_set_gobin = false
+
 [tasks.build]
 description = "Build the deep-analysis binary"
 run = """
 mkdir -p dist
 go build -o dist/deep-analysis .
 """
+
+[tasks.install]
+description = "Install the CLI with go install"
+run = "go install ."
+
+[tasks."install:global"]
+description = "Install the CLI to ~/bin"
+run = 'GOBIN="${HOME}/bin" go install .'
 
 [tasks.test]
 description = "Run tests"
@@ -27,20 +38,4 @@ run = "rm -rf dist/"
 
 [tasks.run]
 description = "Run deep-analysis on a markdown document"
-depends = ["build"]
-usage = '''
-arg "<input>" env="INPUT" help="Input markdown file"
-arg "[output]" env="OUTPUT" help="Optional output markdown file"
-'''
-run = '''
-[ -n "${OPENAI_API_KEY:-}" ] || {
-  echo "Error: OPENAI_API_KEY environment variable is required" >&2
-  exit 1
-}
-
-if [ -n "${usage_output:-}" ]; then
-  exec ./dist/deep-analysis --input "${usage_input?}" --output "${usage_output}"
-fi
-
-exec ./dist/deep-analysis --input "${usage_input?}"
-'''
+run = "go run ."
