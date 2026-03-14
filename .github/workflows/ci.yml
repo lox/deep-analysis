@@ -17,10 +17,10 @@ jobs:
       - uses: jdx/mise-action@v3
 
       - name: Build
-        run: go build ./...
+        run: mise run build
 
       - name: Test
-        run: go test -v ./...
+        run: mise run test
 
       - name: Lint
-        run: golangci-lint run
+        run: mise run lint

@@ -14,6 +14,7 @@ A CLI tool for systematic deep analysis of markdown documents and codebases usin
 ## Prerequisites
 
 - [mise](https://mise.jdx.dev/) for the pinned Go and CLI toolchain in `mise.toml`
+- Go 1.25.3 or later if building without `mise`
 - [OpenAI API Key](https://platform.openai.com/) with access to `gpt-5.4-pro` and `gpt-5.4`
 
 ## Installation
@@ -22,10 +23,18 @@ A CLI tool for systematic deep analysis of markdown documents and codebases usin
 mise install
 
 # Build the CLI with the pinned toolchain
-mise exec -- task build
-```
+mise run build
 
-If your shell already activates `mise`, the same development commands work as plain `task ...`.
+# Install into your Go bin dir
+mise run install
+
+# Install into ~/bin
+mise run install:global
+
+# Or directly with Go if you already have it installed
+mkdir -p dist
+go build -o dist/deep-analysis .
+```
 
 ## Configuration
 
@@ -133,9 +142,13 @@ INFO Total cost                         usd=$1.0245
 ## Development
 
 ```bash
-mise exec -- task build   # Build to dist/deep-analysis
-mise exec -- task test    # Run tests
-mise exec -- task lint    # Run linter
+mise run build  # Build to dist/deep-analysis
+mise run install  # Install to GOBIN or GOPATH/bin
+mise run install:global  # Install to ~/bin
+mise run test   # Run tests
+mise run lint   # Run linter
+mise run run notes.md
+mise run run notes.md --output annotated.md
 ```
 
 ## Architecture

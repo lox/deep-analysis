@@ -1,4 +1,41 @@
 [tools]
 go = "1.25.3"
-"aqua:go-task/task" = "3.48.0"
-"aqua:golangci/golangci-lint" = "2.5.0"
+
+[settings]
+go_set_gobin = false
+
+[tasks.build]
+description = "Build the deep-analysis binary"
+run = """
+mkdir -p dist
+go build -o dist/deep-analysis .
+"""
+
+[tasks.install]
+description = "Install the CLI with go install"
+run = "go install ."
+
+[tasks."install:global"]
+description = "Install the CLI to ~/bin"
+run = 'GOBIN="${HOME}/bin" go install .'
+
+[tasks.test]
+description = "Run tests"
+run = "go test -v ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+tools = { "aqua:golangci/golangci-lint" = "2.5.0" }
+
+[tasks.tidy]
+description = "Tidy go modules"
+run = "go mod tidy"
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = "rm -rf dist/"
+
+[tasks.run]
+description = "Run deep-analysis on a markdown document"
+run = "go run ."
