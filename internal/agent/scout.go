@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	DefaultScoutModel = "gpt-5.4"
+	DefaultScoutModel = "gpt-5.5"
 )
 
 // ScoutUsage tracks token usage for scout operations.

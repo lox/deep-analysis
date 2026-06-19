@@ -22,8 +22,8 @@ type CLI struct {
 	Debug           bool   `help:"Enable debug logging"`
 	Continue        string `help:"Session id to continue a previous conversation" name:"continue"`
 	Reset           bool   `help:"Ignore stored session state and start a fresh conversation"`
-	ResearcherModel string `help:"Model to use for researcher (default: gpt-5.4-pro)" default:"gpt-5.4-pro"`
-	ScoutModel      string `help:"Model to use for scout dispatcher (default: gpt-5.4)" default:"gpt-5.4"`
+	ResearcherModel string `help:"Model to use for researcher (default: gpt-5.5-pro)" default:"gpt-5.5-pro"`
+	ScoutModel      string `help:"Model to use for scout dispatcher (default: gpt-5.5)" default:"gpt-5.5"`
 	ReasoningEffort string `help:"Reasoning effort for researcher: low, medium, high, xhigh (default: xhigh)" default:"xhigh" enum:"low,medium,high,xhigh"`
 	Cwd             string `help:"Working directory for file operations (default: current directory)"`
 }
