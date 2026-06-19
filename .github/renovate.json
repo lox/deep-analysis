@@ -1,0 +1,57 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "enabledManagers": ["custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update default OpenAI GPT model strings.",
+      "managerFilePatterns": [
+        "/(^|/)main\\.go$/",
+        "/(^|/)internal/agent/scout\\.go$/"
+      ],
+      "matchStrings": [
+        "renovate: depName=openai/gpt-latest[^\\n]*\\n[^\\n]*\"(?<currentValue>gpt-[0-9]+(?:\\.[0-9]+)?)\""
+      ],
+      "depNameTemplate": "openai/gpt-latest",
+      "datasourceTemplate": "custom.openai-latest-gpt",
+      "versioningTemplate": "regex:^gpt-(?<major>\\d+)(?:\\.(?<minor>\\d+))?$"
+    },
+    {
+      "customType": "regex",
+      "description": "Update default OpenAI GPT Pro model strings.",
+      "managerFilePatterns": [
+        "/(^|/)main\\.go$/",
+        "/(^|/)internal/client/deepanalysis\\.go$/"
+      ],
+      "matchStrings": [
+        "renovate: depName=openai/gpt-latest-pro[^\\n]*\\n[^\\n]*\"(?<currentValue>gpt-[0-9]+(?:\\.[0-9]+)?-pro)\""
+      ],
+      "depNameTemplate": "openai/gpt-latest-pro",
+      "datasourceTemplate": "custom.openai-latest-gpt-pro",
+      "versioningTemplate": "regex:^gpt-(?<major>\\d+)(?:\\.(?<minor>\\d+))?(?<compatibility>-pro)$"
+    }
+  ],
+  "customDatasources": {
+    "openai-latest-gpt": {
+      "defaultRegistryUrlTemplate": "https://developers.openai.com/api/docs/guides/latest-model.md",
+      "format": "plain",
+      "transformTemplates": [
+        "{\"releases\":[{\"version\": $trim($replace(releases.version[$match($, /^\\s*model:\\s*gpt-/)][0], /^\\s*model:\\s*/, \"\"))}],\"homepage\":\"https://developers.openai.com/api/docs/guides/latest-model\"}"
+      ]
+    },
+    "openai-latest-gpt-pro": {
+      "defaultRegistryUrlTemplate": "https://developers.openai.com/api/docs/guides/reasoning.md",
+      "format": "plain",
+      "transformTemplates": [
+        "{\"releases\":[{\"version\": $substringBefore($substringAfter(releases.version[$contains($, \"highest-intelligence\")][0], \"use [`\"), \"`]\")}],\"homepage\":\"https://developers.openai.com/api/docs/guides/reasoning\"}"
+      ]
+    }
+  },
+  "packageRules": [
+    {
+      "matchPackageNames": ["openai/gpt-latest", "openai/gpt-latest-pro"],
+      "groupName": "OpenAI model defaults"
+    }
+  ]
+}

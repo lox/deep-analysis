@@ -1,12 +1,12 @@
 # Deep Analysis CLI
 
-A CLI tool for systematic deep analysis of markdown documents and codebases using a two-tier AI architecture: GPT-5.5 Pro for reasoning and GPT-5.5 for file discovery.
+A CLI tool for systematic deep analysis of markdown documents and codebases using a two-tier AI architecture: a researcher model for reasoning and a scout model for file discovery.
 
 > 🤖  **Note:** This project was ["vibe engineered"](https://simonwillison.net/2025/Oct/7/vibe-engineering/) with [Amp](https://ampcode.com) and Claude Opus 4.5 and others as part of my ongoing effort to demonstrate that AI-assisted development can produce high-quality software when paired with rigorous design documentation, comprehensive tests, and careful human review.
 
 ## Features
 
-- **Two-Tier Architecture**: GPT-5.5 Pro focuses on reasoning while GPT-5.5 handles file discovery
+- **Two-Tier Architecture**: The researcher model focuses on reasoning while the scout model handles file discovery
 - **Three High-Level Tools**: `find_files`, `summarize_files`, `read_files` with cost controls
 - **Session Continuity**: Continue conversations with `--continue <session-id>`
 - **Cost Tracking**: Separate usage reporting for researcher and scout models
@@ -15,7 +15,7 @@ A CLI tool for systematic deep analysis of markdown documents and codebases usin
 
 - [mise](https://mise.jdx.dev/) for the pinned Go and CLI toolchain in `mise.toml`
 - Go 1.25.3 or later if building without `mise`
-- [OpenAI API Key](https://platform.openai.com/) with access to `gpt-5.5-pro` and `gpt-5.5`
+- [OpenAI API Key](https://platform.openai.com/) with access to the configured researcher and scout models
 
 ## Installation
 
@@ -86,8 +86,8 @@ The AI will see your previous analysis and focus on new questions.
 | `--continue` | Session ID to continue a previous conversation |
 | `--reset` | Start fresh, ignoring stored session state |
 | `--cwd` | Working directory for file operations |
-| `--researcher-model` | Model for researcher analysis (default: gpt-5.5-pro) |
-| `--scout-model` | Model for scout dispatcher (default: gpt-5.5) |
+| `--researcher-model` | Model for researcher analysis |
+| `--scout-model` | Model for scout dispatcher |
 | `--reasoning-effort` | Reasoning effort: low, medium, high, xhigh (default: xhigh) |
 | `--debug` | Enable debug logging |
 
@@ -96,11 +96,11 @@ The AI will see your previous analysis and focus on new questions.
 ### Two-Tier Architecture
 
 ```
-Researcher (GPT-5.5 Pro)   →  Reasoning, analysis, conclusions
+Researcher model           →  Reasoning, analysis, conclusions
         ↓
     find_files / summarize_files / read_files
         ↓
-Scout (GPT-5.5)            →  Translates queries to glob/grep
+Scout model                →  Translates queries to glob/grep
         ↓
 File System                →  Actual file access
 ```
@@ -134,9 +134,9 @@ The researcher follows: **find → summarize → read**
 Each run reports usage for both models:
 
 ```
-INFO Researcher usage model=gpt-5.5-pro api_calls=5 input_tokens=12000 output_tokens=3000 cost_usd=$0.9000
-INFO Scout usage      model=gpt-5.5 api_calls=8 input_tokens=45000 output_tokens=800  cost_usd=$0.2490
-INFO Total cost                        usd=$1.1490
+INFO Researcher usage model=<researcher-model> api_calls=5 input_tokens=12000 output_tokens=3000 cost_usd=$0.9000
+INFO Scout usage      model=<scout-model>      api_calls=8 input_tokens=45000 output_tokens=800  cost_usd=$0.2490
+INFO Total cost                         usd=$1.1490
 ```
 
 ## Development
@@ -158,11 +158,11 @@ mise run run notes.md --output annotated.md
 ├── main.go                      # CLI entrypoint
 ├── internal/
 │   ├── agent/
-│   │   ├── scout.go            # Scout dispatcher (defaults to gpt-5.5)
+│   │   ├── scout.go            # Scout dispatcher default
 │   │   ├── manifest.go         # Project file listing
 │   │   └── file_search.go      # Legacy file search
 │   ├── client/
-│   │   ├── deepanalysis.go     # Researcher client (defaults to gpt-5.5-pro)
+│   │   ├── deepanalysis.go     # Researcher client default
 │   │   └── session_store.go    # Session persistence
 │   ├── fileops/
 │   │   └── fileops.go          # File operations (read, grep, glob)

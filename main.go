@@ -17,13 +17,15 @@ var (
 )
 
 type CLI struct {
-	Input           string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
-	Output          string `help:"Path to output markdown document (defaults to input file)"`
-	Debug           bool   `help:"Enable debug logging"`
-	Continue        string `help:"Session id to continue a previous conversation" name:"continue"`
-	Reset           bool   `help:"Ignore stored session state and start a fresh conversation"`
-	ResearcherModel string `help:"Model to use for researcher (default: gpt-5.5-pro)" default:"gpt-5.5-pro"`
-	ScoutModel      string `help:"Model to use for scout dispatcher (default: gpt-5.5)" default:"gpt-5.5"`
+	Input    string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
+	Output   string `help:"Path to output markdown document (defaults to input file)"`
+	Debug    bool   `help:"Enable debug logging"`
+	Continue string `help:"Session id to continue a previous conversation" name:"continue"`
+	Reset    bool   `help:"Ignore stored session state and start a fresh conversation"`
+	// renovate: depName=openai/gpt-latest-pro
+	ResearcherModel string `help:"Model to use for researcher" default:"gpt-5.5-pro"`
+	// renovate: depName=openai/gpt-latest
+	ScoutModel      string `help:"Model to use for scout dispatcher" default:"gpt-5.5"`
 	ReasoningEffort string `help:"Reasoning effort for researcher: low, medium, high, xhigh (default: xhigh)" default:"xhigh" enum:"low,medium,high,xhigh"`
 	Cwd             string `help:"Working directory for file operations (default: current directory)"`
 }
