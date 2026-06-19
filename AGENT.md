@@ -3,8 +3,8 @@
 ## Project Overview
 
 Deep Analysis CLI - a two-tier AI tool for codebase analysis:
-- **Researcher** (GPT-5.4-Pro): Reasoning and analysis
-- **Scout** (GPT-5.4): File discovery and summarization
+- **Researcher** (GPT-5.5 Pro): Reasoning and analysis
+- **Scout** (GPT-5.5): File discovery and summarization
 
 ## Project Structure
 
@@ -12,12 +12,12 @@ Deep Analysis CLI - a two-tier AI tool for codebase analysis:
 main.go                         # CLI entrypoint
 internal/
   agent/
-    scout.go                    # Scout dispatcher (GPT-5.4)
+    scout.go                    # Scout dispatcher (GPT-5.5)
     manifest.go                 # Project file listing
     fileops.go                  # FileOps interface
     file_search.go              # Legacy file search (unused)
   client/
-    deepanalysis.go             # Researcher client (GPT-5.4-Pro)
+    deepanalysis.go             # Researcher client (GPT-5.5 Pro)
     session_store.go            # Session persistence (XDG state)
   fileops/
     fileops.go                  # File operations (read, grep, glob)
@@ -62,7 +62,7 @@ deep-analysis --reasoning-effort high task.md
 
 ## Architecture Notes
 
-### Tools exposed to Researcher (GPT-5.4-Pro)
+### Tools exposed to Researcher (GPT-5.5 Pro)
 
 1. **find_files(query, paths)** - Scout translates NL to glob/grep
 2. **summarize_files(paths, focus)** - Scout reads and summarizes
