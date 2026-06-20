@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	// renovate: depName=openai/gpt-latest-pro
 	DefaultResearcherModel = "gpt-5.5-pro"
 	maxIterations          = 50
 )

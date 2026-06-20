@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	// renovate: depName=openai/gpt-latest
 	DefaultScoutModel = "gpt-5.5"
 )
 

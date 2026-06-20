@@ -1,6 +1,6 @@
 # Two-Tier Analysis Plan
 
-Goal: cut latency and context churn while keeping quality by separating a GPT-5.5 Pro researcher role from a GPT-5.5 scout role for mechanical file operations.
+Goal: cut latency and context churn while keeping quality by separating a researcher model from a scout model for mechanical file operations.
 
 ## Architecture: Scout as Tool Dispatcher
 
@@ -8,7 +8,7 @@ Instead of an upfront scout pass that guesses what files are needed, the scout a
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Researcher (GPT-5.5 Pro)                                   │
+│  Researcher model                                            │
 │  - Focuses on reasoning, strategy, analysis                 │
 │  - Decides WHAT to look for                                 │
 │  - Has 3 high-level tools                                   │
@@ -16,7 +16,7 @@ Instead of an upfront scout pass that guesses what files are needed, the scout a
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Scout Dispatcher (GPT-5.5)                                 │
+│  Scout Dispatcher                                            │
 │  - Translates NL queries to file operations                 │
 │  - Handles HOW to find things                               │
 │  - Summarizes file contents on demand                       │
@@ -71,9 +71,9 @@ Get full file contents for detailed analysis.
 ## Why This Is Better
 
 1. **On-demand vs upfront**: Scout responds to what researcher actually needs, not predictions
-2. **Cost efficient**: Pro researcher context is spent on reasoning, not parsing file listings; deployments can override the scout model for lower-cost navigation
+2. **Cost efficient**: Researcher model context is spent on reasoning, not parsing file listings; deployments can override the scout model for lower-cost navigation
 3. **Iterative**: Researcher can refine searches based on what it learns
-4. **Clear separation**: Researcher = strategy/reasoning, scout = navigation/mechanics
+4. **Clear separation**: Researcher model = strategy/reasoning, scout model = navigation/mechanics
 
 ## Implementation
 
