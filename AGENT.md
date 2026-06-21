@@ -88,4 +88,4 @@ deep-analysis --reasoning-effort high task.md
 
 ## Configuration
 
-Required: `OPENAI_API_KEY` environment variable
+Required: `OPENAI_API_KEY` environment variable or YAML config at `~/.config/deep-analysis/config.yaml` / `~/.config/openai/config.yaml`

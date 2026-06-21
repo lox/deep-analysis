@@ -38,11 +38,27 @@ go build -o dist/deep-analysis .
 
 ## Configuration
 
-Set your OpenAI API key:
+Set your OpenAI API key with an environment variable:
 
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
 ```
+
+Or store it in an XDG config file:
+
+```bash
+./dist/deep-analysis setup
+```
+
+This writes the same file as:
+
+```bash
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis"
+printf 'openai_api_key: %s\n' "your-api-key-here" > "${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml"
+chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml"
+```
+
+`deep-analysis` also checks `${XDG_CONFIG_HOME:-$HOME/.config}/openai/config.yaml`, where `api_key: your-api-key-here` is accepted. `OPENAI_API_KEY` takes precedence.
 
 ## Usage
 
