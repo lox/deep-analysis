@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/log"
+	"github.com/charmbracelet/x/term"
 	"github.com/lox/deep-analysis/internal/client"
 	"github.com/lox/deep-analysis/internal/fileops"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -17,6 +23,11 @@ var (
 )
 
 type CLI struct {
+	Analyze AnalyzeCmd `cmd:"" default:"withargs" help:"Analyze a markdown document"`
+	Setup   SetupCmd   `cmd:"" help:"Create XDG config and save the OpenAI API key"`
+}
+
+type AnalyzeCmd struct {
 	Input    string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
 	Output   string `help:"Path to output markdown document (defaults to input file)"`
 	Debug    bool   `help:"Enable debug logging"`
@@ -30,7 +41,9 @@ type CLI struct {
 	Cwd             string `help:"Working directory for file operations (default: current directory)"`
 }
 
-func (c *CLI) Run() error {
+type SetupCmd struct{}
+
+func (c *AnalyzeCmd) Run() error {
 	// Configure logging
 	if c.Debug {
 		log.SetLevel(log.DebugLevel)
@@ -63,9 +76,9 @@ func (c *CLI) Run() error {
 		outputPath = c.Input
 	}
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("OPENAI_API_KEY environment variable is required")
+	apiKey, err := openAIAPIKey()
+	if err != nil {
+		return err
 	}
 
 	// Read input document
@@ -158,6 +171,21 @@ func (c *CLI) Run() error {
 	return nil
 }
 
+func (c *SetupCmd) Run() error {
+	apiKey, err := promptOpenAIAPIKey()
+	if err != nil {
+		return err
+	}
+
+	path, err := saveOpenAIConfig(apiKey)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "Saved config to %s\n", path)
+	return nil
+}
+
 func main() {
 	var cli CLI
 	ctx := kong.Parse(&cli,
@@ -169,8 +197,122 @@ func main() {
 		},
 	)
 
-	if err := cli.Run(); err != nil {
+	if err := ctx.Run(); err != nil {
 		log.Fatal(err)
 	}
 	ctx.Exit(0)
+}
+
+func openAIAPIKey() (string, error) {
+	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
+		return apiKey, nil
+	}
+
+	paths, err := configPaths()
+	if err != nil {
+		return "", err
+	}
+
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("read OpenAI API key from %s: %w", path, err)
+		}
+
+		var cfg appConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return "", fmt.Errorf("parse config %s: %w", path, err)
+		}
+
+		apiKey := strings.TrimSpace(cfg.OpenAIAPIKey)
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(cfg.APIKey)
+		}
+		if apiKey == "" {
+			return "", fmt.Errorf("OpenAI API key is missing in %s", path)
+		}
+		return apiKey, nil
+	}
+
+	return "", fmt.Errorf("OPENAI_API_KEY environment variable is required or put the key in %s", strings.Join(paths, " or "))
+}
+
+type appConfig struct {
+	OpenAIAPIKey string `yaml:"openai_api_key,omitempty"`
+	APIKey       string `yaml:"api_key,omitempty"`
+}
+
+func configPaths() ([]string, error) {
+	configDir := os.Getenv("XDG_CONFIG_HOME")
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve home dir: %w", err)
+		}
+		configDir = filepath.Join(home, ".config")
+	}
+	return []string{
+		filepath.Join(configDir, "deep-analysis", "config.yaml"),
+		filepath.Join(configDir, "openai", "config.yaml"),
+	}, nil
+}
+
+func promptOpenAIAPIKey() (string, error) {
+	fmt.Fprint(os.Stderr, "OpenAI API key: ")
+
+	var data []byte
+	var err error
+	if term.IsTerminal(os.Stdin.Fd()) {
+		data, err = term.ReadPassword(os.Stdin.Fd())
+		fmt.Fprintln(os.Stderr)
+	} else {
+		data, err = readLine(os.Stdin)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read OpenAI API key: %w", err)
+	}
+
+	apiKey := strings.TrimSpace(string(data))
+	if apiKey == "" {
+		return "", fmt.Errorf("OpenAI API key is required")
+	}
+	return apiKey, nil
+}
+
+func readLine(r io.Reader) ([]byte, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && (err != io.EOF || line == "") {
+		return nil, err
+	}
+	return []byte(line), nil
+}
+
+func saveOpenAIConfig(apiKey string) (string, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return "", fmt.Errorf("OpenAI API key is required")
+	}
+
+	paths, err := configPaths()
+	if err != nil {
+		return "", err
+	}
+	path := paths[0]
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create config dir: %w", err)
+	}
+
+	data, err := yaml.Marshal(appConfig{OpenAIAPIKey: apiKey})
+	if err != nil {
+		return "", fmt.Errorf("encode config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("write config: %w", err)
+	}
+	return path, nil
 }
