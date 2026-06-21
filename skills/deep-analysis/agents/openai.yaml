@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Analysis"
+  short_description: "Run Deep Analysis for external repo questions"
+  default_prompt: "Use $deep-analysis to analyze a target repository with the Deep Analysis CLI."
