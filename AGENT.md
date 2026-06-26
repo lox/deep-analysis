@@ -51,6 +51,9 @@ deep-analysis task.md --continue <session-id>
 
 # Use lower reasoning effort for faster responses
 deep-analysis --reasoning-effort high task.md
+
+# Check install/config state
+deep-analysis doctor
 ```
 
 ## Coding Style

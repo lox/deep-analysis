@@ -60,6 +60,12 @@ chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml"
 
 `deep-analysis` also checks `${XDG_CONFIG_HOME:-$HOME/.config}/openai/config.yaml`, where `api_key: your-api-key-here` is accepted. `OPENAI_API_KEY` takes precedence.
 
+Check the installed binary and credential source:
+
+```bash
+./dist/deep-analysis doctor
+```
+
 ## Usage
 
 ### Basic Analysis
@@ -106,6 +112,14 @@ The AI will see your previous analysis and focus on new questions.
 | `--scout-model` | Model for scout dispatcher |
 | `--reasoning-effort` | Reasoning effort: low, medium, high, xhigh (default: xhigh) |
 | `--debug` | Enable debug logging |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `analyze <input>` | Analyze a markdown document (default command) |
+| `setup` | Prompt for an OpenAI API key and write XDG config |
+| `doctor` | Check the installed binary and credential configuration |
 
 ## How It Works
 

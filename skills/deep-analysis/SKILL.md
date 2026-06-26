@@ -15,8 +15,8 @@ It cannot run tests, browse the web, inspect live services, or change target pro
 
 1. Do a quick local orientation first. Identify the repo or document scope, the concrete question, important constraints, and any current facts the Deep Analysis run should know.
 2. If the current workspace is the Deep Analysis source checkout, stop and use ordinary local tools unless the user explicitly asked to run Deep Analysis against a different target.
-3. Confirm `deep-analysis` is available. If not, install it with `mise use -g github:lox/deep-analysis`; if the current shell still cannot find it, invoke it through `mise exec -- deep-analysis`.
-4. Confirm credentials are available without printing their value: `OPENAI_API_KEY`, `~/.config/deep-analysis/config.yaml`, or `~/.config/openai/config.yaml`. If credentials are missing or the CLI is unavailable, report that blocker instead of inventing an analysis.
+3. Confirm `deep-analysis` is available and credentials are configured with `deep-analysis doctor`. If it is not available, install it with `mise use -g github:lox/deep-analysis`; if the current shell still cannot find it, invoke it through `mise exec -- deep-analysis`.
+4. If credentials are missing, ask the user to run `deep-analysis setup`, provide credentials, or skip the Deep Analysis run.
 5. Write a concise markdown prompt. Include the task, target repo path, context already discovered, files or directories worth considering, constraints, and the desired output shape.
 6. Run the CLI with an explicit `--output` path unless the user specifically wants the input document updated in place.
 7. Read the generated output, then verify any actionable claims against the repo before editing code or reporting conclusions.
