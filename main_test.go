@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
@@ -108,6 +110,15 @@ func TestCLIParsesSetupAndDefaultAnalyze(t *testing.T) {
 		t.Fatalf("Parse setup: %v", err)
 	}
 
+	var doctorCLI CLI
+	doctorParser, err := kong.New(&doctorCLI)
+	if err != nil {
+		t.Fatalf("kong.New doctor: %v", err)
+	}
+	if _, err := doctorParser.Parse([]string{"doctor"}); err != nil {
+		t.Fatalf("Parse doctor: %v", err)
+	}
+
 	var analyzeCLI CLI
 	analyzeParser, err := kong.New(&analyzeCLI)
 	if err != nil {
@@ -118,5 +129,23 @@ func TestCLIParsesSetupAndDefaultAnalyze(t *testing.T) {
 	}
 	if analyzeCLI.Analyze.Input != "notes.md" || analyzeCLI.Analyze.Output != "annotated.md" || analyzeCLI.Analyze.Cwd != "/tmp" {
 		t.Fatalf("parsed analyze = %+v", analyzeCLI.Analyze)
+	}
+}
+
+func TestDoctorReportsCredentialSourceWithoutSecret(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "secret-key")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var out bytes.Buffer
+	if err := runDoctor(&out); err != nil {
+		t.Fatalf("runDoctor: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "credentials: ok (OPENAI_API_KEY)") {
+		t.Fatalf("doctor output missing credential source:\n%s", got)
+	}
+	if strings.Contains(got, "secret-key") {
+		t.Fatalf("doctor output leaked credential:\n%s", got)
 	}
 }

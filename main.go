@@ -25,6 +25,7 @@ var (
 type CLI struct {
 	Analyze AnalyzeCmd `cmd:"" default:"withargs" help:"Analyze a markdown document"`
 	Setup   SetupCmd   `cmd:"" help:"Create XDG config and save the OpenAI API key"`
+	Doctor  DoctorCmd  `cmd:"" help:"Check install and credential configuration"`
 }
 
 type AnalyzeCmd struct {
@@ -42,6 +43,8 @@ type AnalyzeCmd struct {
 }
 
 type SetupCmd struct{}
+
+type DoctorCmd struct{}
 
 func (c *AnalyzeCmd) Run() error {
 	// Configure logging
@@ -186,6 +189,10 @@ func (c *SetupCmd) Run() error {
 	return nil
 }
 
+func (c *DoctorCmd) Run() error {
+	return runDoctor(os.Stdout)
+}
+
 func main() {
 	var cli CLI
 	ctx := kong.Parse(&cli,
@@ -204,13 +211,18 @@ func main() {
 }
 
 func openAIAPIKey() (string, error) {
+	apiKey, _, err := loadOpenAIAPIKey()
+	return apiKey, err
+}
+
+func loadOpenAIAPIKey() (string, string, error) {
 	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
-		return apiKey, nil
+		return apiKey, "OPENAI_API_KEY", nil
 	}
 
 	paths, err := configPaths()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	for _, path := range paths {
@@ -219,12 +231,12 @@ func openAIAPIKey() (string, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return "", fmt.Errorf("read OpenAI API key from %s: %w", path, err)
+			return "", "", fmt.Errorf("read OpenAI API key from %s: %w", path, err)
 		}
 
 		var cfg appConfig
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return "", fmt.Errorf("parse config %s: %w", path, err)
+			return "", "", fmt.Errorf("parse config %s: %w", path, err)
 		}
 
 		apiKey := strings.TrimSpace(cfg.OpenAIAPIKey)
@@ -232,12 +244,12 @@ func openAIAPIKey() (string, error) {
 			apiKey = strings.TrimSpace(cfg.APIKey)
 		}
 		if apiKey == "" {
-			return "", fmt.Errorf("OpenAI API key is missing in %s", path)
+			return "", "", fmt.Errorf("OpenAI API key is missing in %s", path)
 		}
-		return apiKey, nil
+		return apiKey, path, nil
 	}
 
-	return "", fmt.Errorf("OPENAI_API_KEY environment variable is required or put the key in %s", strings.Join(paths, " or "))
+	return "", "", fmt.Errorf("OPENAI_API_KEY environment variable is required or put the key in %s", strings.Join(paths, " or "))
 }
 
 type appConfig struct {
@@ -315,4 +327,40 @@ func saveOpenAIConfig(apiKey string) (string, error) {
 		return "", fmt.Errorf("write config: %w", err)
 	}
 	return path, nil
+}
+
+func runDoctor(w io.Writer) error {
+	fmt.Fprintf(w, "version: %s\n", version)
+
+	if exe, err := os.Executable(); err == nil {
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		fmt.Fprintf(w, "binary: %s\n", exe)
+	} else {
+		fmt.Fprintf(w, "binary: unknown (%v)\n", err)
+	}
+
+	paths, err := configPaths()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(w, "config:")
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil {
+			fmt.Fprintf(w, "  %s: present mode=%#o\n", path, info.Mode().Perm())
+		} else if os.IsNotExist(err) {
+			fmt.Fprintf(w, "  %s: missing\n", path)
+		} else {
+			fmt.Fprintf(w, "  %s: error: %v\n", path, err)
+		}
+	}
+
+	_, source, err := loadOpenAIAPIKey()
+	if err != nil {
+		fmt.Fprintf(w, "credentials: missing (%v)\n", err)
+		return nil
+	}
+	fmt.Fprintf(w, "credentials: ok (%s)\n", source)
+	return nil
 }
