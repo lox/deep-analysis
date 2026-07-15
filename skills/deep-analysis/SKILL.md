@@ -16,7 +16,7 @@ It cannot run tests, browse the web, inspect live services, or change target pro
 1. Do a quick local orientation first. Identify the repo or document scope, the concrete question, important constraints, and any current facts the Deep Analysis run should know.
 2. If the current workspace is the Deep Analysis source checkout, stop and use ordinary local tools unless the user explicitly asked to run Deep Analysis against a different target.
 3. Confirm `deep-analysis` is available and credentials are configured with `deep-analysis doctor`. If it is not available, install it with `mise use -g github:lox/deep-analysis`; if the current shell still cannot find it, invoke it through `mise exec -- deep-analysis`.
-4. If credentials are missing, ask the user to run `deep-analysis setup`, provide credentials, or skip the Deep Analysis run.
+4. If credentials are missing, ask the user to run `deep-analysis setup` (or `deep-analysis setup --provider anthropic`), provide credentials, or skip the Deep Analysis run.
 5. Write a concise markdown prompt. Include the task, target repo path, context already discovered, files or directories worth considering, constraints, and the desired output shape.
 6. Run the CLI with an explicit `--output` path unless the user specifically wants the input document updated in place.
 7. Read the generated output, then verify any actionable claims against the repo before editing code or reporting conclusions.
@@ -40,7 +40,9 @@ If the current process cannot see the newly installed command yet, use `mise exe
 
 Defaults:
 
-- Models: use the CLI defaults, which track the latest intended models; do not pin model versions unless the user explicitly asks.
+- Models: omitted flags use `researcher` and `scout` from `${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml`, then fall back to the compiled OpenAI defaults. Select models for one run with qualified values such as `--researcher anthropic.claude-fable-5` and `--scout openai.gpt-5.5`.
+- Mixed providers: the provider prefix is independent for each role, so any supported researcher and scout can be combined.
+- Overrides: use the configured defaults unless the user explicitly asks for a model such as Opus.
 - Reasoning effort: `xhigh`
 - Output path: input file, when `--output` is omitted
 - Sessions: `~/.local/state/deep-analysis/sessions/`
@@ -100,6 +102,7 @@ Use `--reset` with the same session id only when intentionally starting fresh.
 
 ## Common Failures
 
-- `OPENAI_API_KEY environment variable is required`: ask the user to run `deep-analysis setup`, provide credentials, or skip the Deep Analysis run.
+- `OPENAI_API_KEY environment variable is required` or `ANTHROPIC_API_KEY environment variable is required`: ask the user to run the matching `deep-analysis setup` command, provide credentials, or skip the Deep Analysis run.
+- `anthropic model refused the request`: report the refusal and use another explicitly selected model only if the user wants a fallback.
 - `input file not found` with `--cwd`: use absolute task and output paths, or place the task document inside the target working directory.
 - Model access, quota, or rate-limit errors: report the provider error and continue with ordinary local analysis where possible.

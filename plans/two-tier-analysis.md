@@ -2,6 +2,8 @@
 
 Goal: cut latency and context churn while keeping quality by separating a researcher model from a scout model for mechanical file operations.
 
+The workflow is provider-neutral, and the researcher and scout providers can be selected independently. OpenAI uses the Responses API; Anthropic uses the Messages API with the same three researcher tools and structured scout outputs. Global role defaults live in the XDG app config and can be overridden independently for one run.
+
 ## Architecture: Scout as Tool Dispatcher
 
 Instead of an upfront scout pass that guesses what files are needed, the scout acts as a **runtime dispatcher** for the researcher's tools.
@@ -89,10 +91,10 @@ Get full file contents for detailed analysis.
 ### Phase 3: Polish
 - Caching of scout results per session
 - Streaming for long operations
-- CLI flags for scout model selection
+- Provider-qualified researcher/scout flags and global role defaults (completed)
 
-## Open Questions
+## Decisions
 
-- Should `read_files` go through scout at all, or direct to fileops?
-- Max files per summarize call? (token limits)
-- Should scout have access to manifest for context?
+- `read_files` uses the shared scout dispatcher for limits and formatting but does not make a scout-model call.
+- `summarize_files` is constrained by per-file truncation rather than a fixed file-count limit.
+- The scout receives a bounded project manifest for file-discovery context.

@@ -13,6 +13,9 @@ import (
 // Session holds persisted conversation state.
 type Session struct {
 	ID                 string    `json:"id"`
+	Provider           string    `json:"provider,omitempty"`
+	ResearcherProvider string    `json:"researcher_provider,omitempty"`
+	ScoutProvider      string    `json:"scout_provider,omitempty"`
 	PreviousResponseID string    `json:"previous_response_id"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`

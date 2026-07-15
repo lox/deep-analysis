@@ -54,6 +54,15 @@ deep-analysis --reasoning-effort high task.md
 
 # Check install/config state
 deep-analysis doctor
+
+# Use Fable research with a Sonnet scout
+deep-analysis task.md --researcher anthropic.claude-fable-5 --scout anthropic.claude-sonnet-5
+
+# Select Opus explicitly
+deep-analysis task.md --researcher anthropic.claude-opus-4-8 --scout anthropic.claude-sonnet-5
+
+# Mix Fable research with an OpenAI scout
+deep-analysis task.md --researcher anthropic.claude-fable-5 --scout openai.gpt-5.5
 ```
 
 ## Coding Style
@@ -80,7 +89,7 @@ deep-analysis doctor
 ### Session Continuity
 
 - Sessions stored in `~/.local/state/deep-analysis/sessions/`
-- `--continue <id>` loads `PreviousResponseID` for conversation context
+- `--continue <id>` resumes context with the same researcher/scout provider pair
 - Continuation note injected to guide researcher on follow-ups
 
 ## Commit Guidelines
@@ -91,4 +100,4 @@ deep-analysis doctor
 
 ## Configuration
 
-Required: `OPENAI_API_KEY` environment variable or YAML config at `~/.config/deep-analysis/config.yaml` / `~/.config/openai/config.yaml`
+Required: `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the selected provider. Keys can also live in `~/.config/deep-analysis/config.yaml` or the provider-specific `~/.config/{openai,anthropic}/config.yaml`. Global `researcher` and `scout` defaults live in `~/.config/deep-analysis/config.yaml`; CLI flags override them, and `setup` preserves them.

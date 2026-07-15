@@ -13,6 +13,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/charmbracelet/log"
 	"github.com/charmbracelet/x/term"
+	"github.com/lox/deep-analysis/internal/agent"
 	"github.com/lox/deep-analysis/internal/client"
 	"github.com/lox/deep-analysis/internal/fileops"
 	"gopkg.in/yaml.v3"
@@ -24,25 +25,30 @@ var (
 
 type CLI struct {
 	Analyze AnalyzeCmd `cmd:"" default:"withargs" help:"Analyze a markdown document"`
-	Setup   SetupCmd   `cmd:"" help:"Create XDG config and save the OpenAI API key"`
-	Doctor  DoctorCmd  `cmd:"" help:"Check install and credential configuration"`
+	Setup   SetupCmd   `cmd:"" help:"Create XDG config and save a provider API key"`
+	Doctor  DoctorCmd  `cmd:"" help:"Check install, effective models, and credential configuration"`
 }
 
 type AnalyzeCmd struct {
-	Input    string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
-	Output   string `help:"Path to output markdown document (defaults to input file)"`
-	Debug    bool   `help:"Enable debug logging"`
-	Continue string `help:"Session id to continue a previous conversation" name:"continue"`
-	Reset    bool   `help:"Ignore stored session state and start a fresh conversation"`
-	// renovate: depName=openai/gpt-latest-pro
-	ResearcherModel string `help:"Model to use for researcher" default:"gpt-5.5-pro"`
-	// renovate: depName=openai/gpt-latest
-	ScoutModel      string `help:"Model to use for scout dispatcher" default:"gpt-5.5"`
+	Input           string `arg:"" help:"Path to input markdown document (relative to --cwd if set)"`
+	Output          string `help:"Path to output markdown document (defaults to input file)"`
+	Debug           bool   `help:"Enable debug logging"`
+	Continue        string `help:"Session id to continue a previous conversation" name:"continue"`
+	Reset           bool   `help:"Ignore stored session state and start a fresh conversation"`
+	Researcher      string `help:"Researcher as provider.model (overrides global config; default: openai.gpt-5.5-pro)"`
+	Scout           string `help:"Scout as provider.model (overrides global config; default: openai.gpt-5.5)"`
 	ReasoningEffort string `help:"Reasoning effort for researcher: low, medium, high, xhigh (default: xhigh)" default:"xhigh" enum:"low,medium,high,xhigh"`
 	Cwd             string `help:"Working directory for file operations (default: current directory)"`
 }
 
-type SetupCmd struct{}
+type modelSelection struct {
+	Provider string
+	Model    string
+}
+
+type SetupCmd struct {
+	Provider string `help:"Provider to configure: openai or anthropic" default:"openai" enum:"openai,anthropic"`
+}
 
 type DoctorCmd struct{}
 
@@ -79,9 +85,25 @@ func (c *AnalyzeCmd) Run() error {
 		outputPath = c.Input
 	}
 
-	apiKey, err := openAIAPIKey()
+	config, _, err := loadAppConfig()
 	if err != nil {
 		return err
+	}
+	researcher, scout, err := c.modelSelections(config)
+	if err != nil {
+		return err
+	}
+
+	researcherAPIKey, err := providerAPIKey(researcher.Provider)
+	if err != nil {
+		return err
+	}
+	scoutAPIKey := researcherAPIKey
+	if scout.Provider != researcher.Provider {
+		scoutAPIKey, err = providerAPIKey(scout.Provider)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Read input document
@@ -93,7 +115,14 @@ func (c *AnalyzeCmd) Run() error {
 
 	// Initialize client with scout dispatcher
 	f := fileops.New()
-	cl := client.New(apiKey, f, c.ResearcherModel, c.ScoutModel)
+	cl, err := client.NewForProviders(
+		researcher.Provider, researcherAPIKey,
+		scout.Provider, scoutAPIKey,
+		f, researcher.Model, scout.Model,
+	)
+	if err != nil {
+		return err
+	}
 
 	// Prepare session state
 	store, err := client.NewSessionStore("deep-analysis")
@@ -114,6 +143,13 @@ func (c *AnalyzeCmd) Run() error {
 	var existingSession *client.Session
 	if !c.Reset {
 		if sess, err := store.Load(continueID); err == nil {
+			sessionResearcherProvider, sessionScoutProvider := providersForSession(sess)
+			if sessionResearcherProvider != researcher.Provider || sessionScoutProvider != scout.Provider {
+				return fmt.Errorf(
+					"session %s uses researcher=%s scout=%s; use --reset to restart it with researcher=%s scout=%s",
+					continueID, sessionResearcherProvider, sessionScoutProvider, researcher.Provider, scout.Provider,
+				)
+			}
 			existingSession = sess
 			previousResponseID = sess.PreviousResponseID
 			log.Info("Continuing session", "session", continueID, "previous_response_id", previousResponseID)
@@ -126,7 +162,7 @@ func (c *AnalyzeCmd) Run() error {
 
 	// Prepare document content
 	document := string(inputContent)
-	if previousResponseID != "" {
+	if existingSession != nil {
 		// Add continuation note for the researcher
 		document += "\n\n---\n\n**[Continuing from previous session. Look for any new questions or sections added after your last \"## Analysis\" output. Focus on answering those rather than repeating prior analysis.]**"
 	}
@@ -135,8 +171,10 @@ func (c *AnalyzeCmd) Run() error {
 	ctx := context.Background()
 	log.Info("Running deep analysis",
 		"bytes", len(document),
-		"researcher_model", c.ResearcherModel,
-		"scout_model", c.ScoutModel,
+		"researcher_provider", researcher.Provider,
+		"scout_provider", scout.Provider,
+		"researcher_model", researcher.Model,
+		"scout_model", scout.Model,
 		"reasoning_effort", c.ReasoningEffort)
 	result, err := cl.Analyze(ctx, document, client.AnalysisOptions{
 		PreviousResponseID: previousResponseID,
@@ -159,6 +197,9 @@ func (c *AnalyzeCmd) Run() error {
 	// Persist session state for follow-ups
 	nextSession := &client.Session{
 		ID:                 continueID,
+		Provider:           sharedProvider(researcher.Provider, scout.Provider),
+		ResearcherProvider: researcher.Provider,
+		ScoutProvider:      scout.Provider,
 		PreviousResponseID: result.ResponseID,
 	}
 	if existingSession != nil {
@@ -174,13 +215,69 @@ func (c *AnalyzeCmd) Run() error {
 	return nil
 }
 
+func (c *AnalyzeCmd) modelSelections(config appConfig) (researcher, scout modelSelection, err error) {
+	researcherValue := strings.TrimSpace(c.Researcher)
+	if researcherValue == "" {
+		researcherValue = strings.TrimSpace(config.Researcher)
+	}
+	if researcherValue == "" {
+		researcherValue = client.OpenAIProvider + "." + client.DefaultResearcherModel
+	}
+	scoutValue := strings.TrimSpace(c.Scout)
+	if scoutValue == "" {
+		scoutValue = strings.TrimSpace(config.Scout)
+	}
+	if scoutValue == "" {
+		scoutValue = client.OpenAIProvider + "." + agent.DefaultScoutModel
+	}
+
+	researcher, err = parseModelSelection("researcher", researcherValue)
+	if err != nil {
+		return modelSelection{}, modelSelection{}, err
+	}
+	scout, err = parseModelSelection("scout", scoutValue)
+	if err != nil {
+		return modelSelection{}, modelSelection{}, err
+	}
+	return researcher, scout, nil
+}
+
+func parseModelSelection(role, value string) (modelSelection, error) {
+	provider, model, ok := strings.Cut(value, ".")
+	if !ok || provider == "" || model == "" {
+		return modelSelection{}, fmt.Errorf("%s must be provider.model, got %q", role, value)
+	}
+	if provider != client.OpenAIProvider && provider != client.AnthropicProvider {
+		return modelSelection{}, fmt.Errorf("unsupported %s provider %q", role, provider)
+	}
+	return modelSelection{Provider: provider, Model: model}, nil
+}
+
+func providersForSession(session *client.Session) (researcherProvider, scoutProvider string) {
+	if session.ResearcherProvider != "" && session.ScoutProvider != "" {
+		return session.ResearcherProvider, session.ScoutProvider
+	}
+	provider := session.Provider
+	if provider == "" {
+		provider = client.OpenAIProvider
+	}
+	return provider, provider
+}
+
+func sharedProvider(researcherProvider, scoutProvider string) string {
+	if researcherProvider == scoutProvider {
+		return researcherProvider
+	}
+	return ""
+}
+
 func (c *SetupCmd) Run() error {
-	apiKey, err := promptOpenAIAPIKey()
+	apiKey, err := promptProviderAPIKey(c.Provider)
 	if err != nil {
 		return err
 	}
 
-	path, err := saveOpenAIConfig(apiKey)
+	path, err := saveProviderConfig(c.Provider, apiKey)
 	if err != nil {
 		return err
 	}
@@ -197,7 +294,7 @@ func main() {
 	var cli CLI
 	ctx := kong.Parse(&cli,
 		kong.Name("deep-analysis"),
-		kong.Description(fmt.Sprintf("Deep analysis tool powered by %s with file operation capabilities", client.DefaultResearcherModel)),
+		kong.Description("Deep analysis tool with OpenAI and Anthropic model support and file operation capabilities"),
 		kong.UsageOnError(),
 		kong.Vars{
 			"version": version,
@@ -216,11 +313,24 @@ func openAIAPIKey() (string, error) {
 }
 
 func loadOpenAIAPIKey() (string, string, error) {
-	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
-		return apiKey, "OPENAI_API_KEY", nil
+	return loadProviderAPIKey(client.OpenAIProvider)
+}
+
+func providerAPIKey(provider string) (string, error) {
+	apiKey, _, err := loadProviderAPIKey(provider)
+	return apiKey, err
+}
+
+func loadProviderAPIKey(provider string) (string, string, error) {
+	envName, err := providerAPIKeyEnv(provider)
+	if err != nil {
+		return "", "", err
+	}
+	if apiKey := strings.TrimSpace(os.Getenv(envName)); apiKey != "" {
+		return apiKey, envName, nil
 	}
 
-	paths, err := configPaths()
+	paths, err := providerConfigPaths(provider)
 	if err != nil {
 		return "", "", err
 	}
@@ -231,7 +341,7 @@ func loadOpenAIAPIKey() (string, string, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return "", "", fmt.Errorf("read OpenAI API key from %s: %w", path, err)
+			return "", "", fmt.Errorf("read %s API key from %s: %w", provider, path, err)
 		}
 
 		var cfg appConfig
@@ -239,25 +349,62 @@ func loadOpenAIAPIKey() (string, string, error) {
 			return "", "", fmt.Errorf("parse config %s: %w", path, err)
 		}
 
-		apiKey := strings.TrimSpace(cfg.OpenAIAPIKey)
-		if apiKey == "" {
+		var apiKey string
+		switch provider {
+		case client.OpenAIProvider:
+			apiKey = strings.TrimSpace(cfg.OpenAIAPIKey)
+		case client.AnthropicProvider:
+			apiKey = strings.TrimSpace(cfg.AnthropicAPIKey)
+		}
+		if apiKey == "" && (path != paths[0] || provider == client.OpenAIProvider) {
 			apiKey = strings.TrimSpace(cfg.APIKey)
 		}
 		if apiKey == "" {
-			return "", "", fmt.Errorf("OpenAI API key is missing in %s", path)
+			continue
 		}
 		return apiKey, path, nil
 	}
 
-	return "", "", fmt.Errorf("OPENAI_API_KEY environment variable is required or put the key in %s", strings.Join(paths, " or "))
+	return "", "", fmt.Errorf("%s environment variable is required or put the key in %s", envName, strings.Join(paths, " or "))
 }
 
 type appConfig struct {
-	OpenAIAPIKey string `yaml:"openai_api_key,omitempty"`
-	APIKey       string `yaml:"api_key,omitempty"`
+	OpenAIAPIKey    string `yaml:"openai_api_key,omitempty"`
+	AnthropicAPIKey string `yaml:"anthropic_api_key,omitempty"`
+	APIKey          string `yaml:"api_key,omitempty"`
+	Researcher      string `yaml:"researcher,omitempty"`
+	Scout           string `yaml:"scout,omitempty"`
+}
+
+func loadAppConfig() (appConfig, string, error) {
+	paths, err := configPaths()
+	if err != nil {
+		return appConfig{}, "", err
+	}
+	path := paths[0]
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return appConfig{}, path, nil
+		}
+		return appConfig{}, path, fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	var config appConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return appConfig{}, path, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	return config, path, nil
 }
 
 func configPaths() ([]string, error) {
+	return providerConfigPaths(client.OpenAIProvider)
+}
+
+func providerConfigPaths(provider string) ([]string, error) {
+	if provider != client.OpenAIProvider && provider != client.AnthropicProvider {
+		return nil, fmt.Errorf("unsupported provider %q", provider)
+	}
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" {
 		home, err := os.UserHomeDir()
@@ -268,12 +415,30 @@ func configPaths() ([]string, error) {
 	}
 	return []string{
 		filepath.Join(configDir, "deep-analysis", "config.yaml"),
-		filepath.Join(configDir, "openai", "config.yaml"),
+		filepath.Join(configDir, provider, "config.yaml"),
 	}, nil
 }
 
-func promptOpenAIAPIKey() (string, error) {
-	fmt.Fprint(os.Stderr, "OpenAI API key: ")
+func providerAPIKeyEnv(provider string) (string, error) {
+	switch provider {
+	case client.OpenAIProvider:
+		return "OPENAI_API_KEY", nil
+	case client.AnthropicProvider:
+		return "ANTHROPIC_API_KEY", nil
+	default:
+		return "", fmt.Errorf("unsupported provider %q", provider)
+	}
+}
+
+func promptProviderAPIKey(provider string) (string, error) {
+	if _, err := providerAPIKeyEnv(provider); err != nil {
+		return "", err
+	}
+	providerName := map[string]string{
+		client.OpenAIProvider:    "OpenAI",
+		client.AnthropicProvider: "Anthropic",
+	}[provider]
+	fmt.Fprintf(os.Stderr, "%s API key: ", providerName)
 
 	var data []byte
 	var err error
@@ -284,12 +449,12 @@ func promptOpenAIAPIKey() (string, error) {
 		data, err = readLine(os.Stdin)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read OpenAI API key: %w", err)
+		return "", fmt.Errorf("read %s API key: %w", provider, err)
 	}
 
 	apiKey := strings.TrimSpace(string(data))
 	if apiKey == "" {
-		return "", fmt.Errorf("OpenAI API key is required")
+		return "", fmt.Errorf("%s API key is required", provider)
 	}
 	return apiKey, nil
 }
@@ -303,12 +468,16 @@ func readLine(r io.Reader) ([]byte, error) {
 }
 
 func saveOpenAIConfig(apiKey string) (string, error) {
+	return saveProviderConfig(client.OpenAIProvider, apiKey)
+}
+
+func saveProviderConfig(provider, apiKey string) (string, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
-		return "", fmt.Errorf("OpenAI API key is required")
+		return "", fmt.Errorf("%s API key is required", provider)
 	}
 
-	paths, err := configPaths()
+	paths, err := providerConfigPaths(provider)
 	if err != nil {
 		return "", err
 	}
@@ -318,7 +487,25 @@ func saveOpenAIConfig(apiKey string) (string, error) {
 		return "", fmt.Errorf("create config dir: %w", err)
 	}
 
-	data, err := yaml.Marshal(appConfig{OpenAIAPIKey: apiKey})
+	var cfg appConfig
+	if existing, readErr := os.ReadFile(path); readErr == nil {
+		if err := yaml.Unmarshal(existing, &cfg); err != nil {
+			return "", fmt.Errorf("parse existing config %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(readErr) {
+		return "", fmt.Errorf("read existing config %s: %w", path, readErr)
+	}
+
+	switch provider {
+	case client.OpenAIProvider:
+		cfg.OpenAIAPIKey = apiKey
+	case client.AnthropicProvider:
+		cfg.AnthropicAPIKey = apiKey
+	default:
+		return "", fmt.Errorf("unsupported provider %q", provider)
+	}
+
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return "", fmt.Errorf("encode config: %w", err)
 	}
@@ -345,6 +532,11 @@ func runDoctor(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	anthropicPaths, err := providerConfigPaths(client.AnthropicProvider)
+	if err != nil {
+		return err
+	}
+	paths = append(paths, anthropicPaths[1])
 	fmt.Fprintln(w, "config:")
 	for _, path := range paths {
 		if info, err := os.Stat(path); err == nil {
@@ -356,11 +548,32 @@ func runDoctor(w io.Writer) error {
 		}
 	}
 
-	_, source, err := loadOpenAIAPIKey()
+	config, configPath, err := loadAppConfig()
 	if err != nil {
-		fmt.Fprintf(w, "credentials: missing (%v)\n", err)
-		return nil
+		return err
 	}
-	fmt.Fprintf(w, "credentials: ok (%s)\n", source)
+	researcher, scout, err := (&AnalyzeCmd{}).modelSelections(config)
+	if err != nil {
+		return err
+	}
+	researcherSource := "compiled default"
+	if strings.TrimSpace(config.Researcher) != "" {
+		researcherSource = configPath
+	}
+	scoutSource := "compiled default"
+	if strings.TrimSpace(config.Scout) != "" {
+		scoutSource = configPath
+	}
+	fmt.Fprintf(w, "models.researcher: %s.%s (%s)\n", researcher.Provider, researcher.Model, researcherSource)
+	fmt.Fprintf(w, "models.scout: %s.%s (%s)\n", scout.Provider, scout.Model, scoutSource)
+
+	for _, provider := range []string{client.OpenAIProvider, client.AnthropicProvider} {
+		_, source, err := loadProviderAPIKey(provider)
+		if err != nil {
+			fmt.Fprintf(w, "credentials.%s: missing (%v)\n", provider, err)
+			continue
+		}
+		fmt.Fprintf(w, "credentials.%s: ok (%s)\n", provider, source)
+	}
 	return nil
 }
