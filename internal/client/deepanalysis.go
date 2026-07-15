@@ -17,14 +17,68 @@ import (
 const (
 	// renovate: depName=openai/gpt-latest-pro
 	DefaultResearcherModel = "gpt-5.5-pro"
+	AnthropicProvider      = "anthropic"
+	OpenAIProvider         = "openai"
 	maxIterations          = 50
 )
 
+// Analyzer runs the researcher/scout analysis workflow.
+type Analyzer interface {
+	Analyze(ctx context.Context, document string, opts AnalysisOptions) (AnalysisResult, error)
+}
+
+// DefaultModelsForProvider returns the two-tier defaults for a provider.
+func DefaultModelsForProvider(provider string) (researcherModel, scoutModel string, err error) {
+	switch provider {
+	case OpenAIProvider:
+		return DefaultResearcherModel, agent.DefaultScoutModel, nil
+	case AnthropicProvider:
+		return DefaultAnthropicResearcherModel, DefaultAnthropicScoutModel, nil
+	default:
+		return "", "", fmt.Errorf("unsupported provider %q", provider)
+	}
+}
+
+// NewForProviders creates an analyzer with independently selected researcher and scout providers.
+func NewForProviders(researcherProvider, researcherAPIKey, scoutProvider, scoutAPIKey string, fileOps agent.FileOps, researcherModel, scoutModel, scoutEffort string) (Analyzer, error) {
+	if researcherModel == "" {
+		defaultResearcherModel, _, err := DefaultModelsForProvider(researcherProvider)
+		if err != nil {
+			return nil, err
+		}
+		researcherModel = defaultResearcherModel
+	}
+	if scoutModel == "" {
+		_, defaultScoutModel, err := DefaultModelsForProvider(scoutProvider)
+		if err != nil {
+			return nil, err
+		}
+		scoutModel = defaultScoutModel
+	}
+
+	var scout *agent.Scout
+	switch scoutProvider {
+	case OpenAIProvider:
+		scout = agent.NewScout(scoutAPIKey, scoutModel, scoutEffort, fileOps)
+	case AnthropicProvider:
+		scout = agent.NewAnthropicScout(scoutAPIKey, scoutModel, scoutEffort, fileOps)
+	default:
+		return nil, fmt.Errorf("unsupported scout provider %q", scoutProvider)
+	}
+
+	switch researcherProvider {
+	case OpenAIProvider:
+		return newOpenAIWithScout(researcherAPIKey, fileOps, researcherModel, scoutModel, scout), nil
+	case AnthropicProvider:
+		return newAnthropicWithScout(researcherAPIKey, fileOps, researcherModel, scoutModel, scout), nil
+	default:
+		return nil, fmt.Errorf("unsupported researcher provider %q", researcherProvider)
+	}
+}
+
 // DeepAnalysisClient handles communication with OpenAI's Responses API
 type DeepAnalysisClient struct {
-	apiKey          string
 	client          *openai.Client
-	fileOps         agent.FileOps
 	scout           *agent.Scout
 	researcherModel string
 	scoutModel      string
@@ -36,7 +90,7 @@ type DeepAnalysisClient struct {
 // AnalysisOptions controls request behavior.
 type AnalysisOptions struct {
 	PreviousResponseID string
-	ReasoningEffort    string // Reasoning effort: low, medium, high, xhigh (default: xhigh)
+	ReasoningEffort    string // Reasoning effort: low, medium, high, xhigh; empty uses the provider default.
 }
 
 // AnalysisResult contains the final model output and metadata.
@@ -47,6 +101,10 @@ type AnalysisResult struct {
 
 // New creates a new DeepAnalysisClient instance.
 func New(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string) *DeepAnalysisClient {
+	return newOpenAIWithScout(apiKey, fileOps, researcherModel, scoutModel, agent.NewScout(apiKey, scoutModel, "", fileOps))
+}
+
+func newOpenAIWithScout(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string, scout *agent.Scout) *DeepAnalysisClient {
 	client := openai.NewClient(
 		option.WithAPIKey(apiKey),
 	)
@@ -59,10 +117,8 @@ func New(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel strin
 	}
 
 	c := &DeepAnalysisClient{
-		apiKey:          apiKey,
 		client:          &client,
-		fileOps:         fileOps,
-		scout:           agent.NewScout(apiKey, scoutModel, fileOps),
+		scout:           scout,
 		researcherModel: researcherModel,
 		scoutModel:      scoutModel,
 		toolCache:       make(map[string]string),
@@ -89,7 +145,9 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 		Instructions:   openai.Opt(c.buildSystemPrompt()),
 		Tools:          c.tools,
 		PromptCacheKey: openai.Opt(cacheKey),
-		Reasoning:      buildReasoningParam(opts.ReasoningEffort),
+	}
+	if opts.ReasoningEffort != "" {
+		params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
 	}
 
 	inputItems := responses.ResponseInputParam{
@@ -192,6 +250,9 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 				OfInputItemList: toolOutputs,
 			},
 			Tools: c.tools,
+		}
+		if opts.ReasoningEffort != "" {
+			params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
 		}
 
 		response, err = c.client.Responses.New(ctx, params)
@@ -600,6 +661,16 @@ func pricingForModel(model string) (inputCostPer1M, cachedInputCostPer1M, output
 	normalized := strings.ToLower(model)
 
 	switch {
+	case matchesModelOrSnapshot(normalized, "claude-fable-5"):
+		return 10.0, 1.0, 50.0
+	case matchesModelOrSnapshot(normalized, "claude-opus-4-8"):
+		return 5.0, 0.5, 25.0
+	case matchesModelOrSnapshot(normalized, "claude-sonnet-5"):
+		return 3.0, 0.3, 15.0
+	case matchesModelOrSnapshot(normalized, "claude-sonnet-4-6"):
+		return 3.0, 0.3, 15.0
+	case matchesModelOrSnapshot(normalized, "claude-haiku-4-5"):
+		return 1.0, 0.1, 5.0
 	case matchesModelOrSnapshot(normalized, "gpt-5.5-pro"):
 		return 30.0, 30.0, 180.0
 	case matchesModelOrSnapshot(normalized, "gpt-5.5"):

@@ -7,6 +7,7 @@ A CLI tool for systematic deep analysis of markdown documents and codebases usin
 ## Features
 
 - **Two-Tier Architecture**: The researcher model focuses on reasoning while the scout model handles file discovery
+- **OpenAI and Anthropic**: Run the same workflow with GPT or Claude models, including Fable and Opus
 - **Three High-Level Tools**: `find_files`, `summarize_files`, `read_files` with cost controls
 - **Session Continuity**: Continue conversations with `--continue <session-id>`
 - **Cost Tracking**: Separate usage reporting for researcher and scout models
@@ -15,7 +16,7 @@ A CLI tool for systematic deep analysis of markdown documents and codebases usin
 
 - [mise](https://mise.jdx.dev/) for the pinned Go and CLI toolchain in `mise.toml`
 - Go 1.25.3 or later if building without `mise`
-- [OpenAI API Key](https://platform.openai.com/) with access to the configured researcher and scout models
+- An [OpenAI API key](https://platform.openai.com/) or [Anthropic API key](https://platform.claude.com/), depending on the selected provider
 
 ## Installation
 
@@ -44,23 +45,33 @@ Set your OpenAI API key with an environment variable:
 export OPENAI_API_KEY="your-api-key-here"
 ```
 
+For Anthropic models, use:
+
+```bash
+export ANTHROPIC_API_KEY="your-api-key-here"
+```
+
 Or store it in an XDG config file:
 
 ```bash
 ./dist/deep-analysis setup
+
+# Or configure Anthropic
+./dist/deep-analysis setup --provider anthropic
 ```
 
-This writes the same file as:
+The shared config stores keys as `openai_api_key` and `anthropic_api_key`. `deep-analysis` also checks the provider-specific `${XDG_CONFIG_HOME:-$HOME/.config}/openai/config.yaml` and `anthropic/config.yaml` files, where `api_key` is accepted. Environment variables take precedence for credentials.
 
-```bash
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis"
-printf 'openai_api_key: %s\n' "your-api-key-here" > "${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml"
-chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml"
+Set global researcher and scout defaults in the shared config so every run can use the same provider mix:
+
+```yaml
+researcher: anthropic.claude-opus-4-8@xhigh
+scout: openai.gpt-5.5@low
 ```
 
-`deep-analysis` also checks `${XDG_CONFIG_HOME:-$HOME/.config}/openai/config.yaml`, where `api_key: your-api-key-here` is accepted. `OPENAI_API_KEY` takes precedence.
+These fields can live alongside the API keys. Model selection precedence is command-line flag, then global config, then the compiled OpenAI defaults. Running `setup` to add or replace a provider key preserves the configured model defaults.
 
-Check the installed binary and credential source:
+Check the installed binary, effective models, and credential sources:
 
 ```bash
 ./dist/deep-analysis doctor
@@ -79,7 +90,29 @@ Check the installed binary and credential source:
 
 # Analyze a project in a different directory
 ./dist/deep-analysis --cwd /path/to/project task.md
+
+# Use Fable 5 for research and Sonnet 5 for scouting
+./dist/deep-analysis task.md \
+  --researcher anthropic.claude-fable-5@xhigh \
+  --scout anthropic.claude-sonnet-5@low
+
+# Use Opus as the researcher instead
+./dist/deep-analysis task.md \
+  --researcher anthropic.claude-opus-4-8@xhigh \
+  --scout anthropic.claude-sonnet-5@low
+
+# Mix providers: Fable researcher with an OpenAI scout
+./dist/deep-analysis task.md \
+  --researcher anthropic.claude-fable-5@xhigh \
+  --scout openai.gpt-5.5@low
+
+# Or GPT researcher with an Anthropic scout
+./dist/deep-analysis task.md \
+  --researcher openai.gpt-5.5-pro@xhigh \
+  --scout anthropic.claude-sonnet-5@low
 ```
+
+Selections use `provider.model[@effort]`. The provider is split at the first dot and optional effort at the final `@`; accepted efforts are `low`, `medium`, `high`, and `xhigh`. Omit the suffix to use the provider's model default. `@` needs no escaping in common shells or YAML.
 
 ### Follow-up Questions
 
@@ -108,9 +141,9 @@ The AI will see your previous analysis and focus on new questions.
 | `--continue` | Session ID to continue a previous conversation |
 | `--reset` | Start fresh, ignoring stored session state |
 | `--cwd` | Working directory for file operations |
-| `--researcher-model` | Model for researcher analysis |
-| `--scout-model` | Model for scout dispatcher |
-| `--reasoning-effort` | Reasoning effort: low, medium, high, xhigh (default: xhigh) |
+| `--researcher` | Researcher as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.5-pro@xhigh`) |
+| `--scout` | Scout as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.5@low`) |
+| `--reasoning-effort` | Deprecated researcher effort override; cannot accompany `@effort` in `--researcher` |
 | `--debug` | Enable debug logging |
 
 ### Commands
@@ -118,8 +151,8 @@ The AI will see your previous analysis and focus on new questions.
 | Command | Description |
 |---------|-------------|
 | `analyze <input>` | Analyze a markdown document (default command) |
-| `setup` | Prompt for an OpenAI API key and write XDG config |
-| `doctor` | Check the installed binary and credential configuration |
+| `setup [--provider openai\|anthropic]` | Prompt for a provider API key and write XDG config |
+| `doctor` | Check the installed binary, effective models, and credential configuration |
 
 ## How It Works
 
@@ -192,7 +225,8 @@ mise run run notes.md --output annotated.md
 │   │   ├── manifest.go         # Project file listing
 │   │   └── file_search.go      # Legacy file search
 │   ├── client/
-│   │   ├── deepanalysis.go     # Researcher client default
+│   │   ├── deepanalysis.go     # OpenAI researcher and shared workflow
+│   │   ├── anthropic.go        # Anthropic researcher tool loop
 │   │   └── session_store.go    # Session persistence
 │   ├── fileops/
 │   │   └── fileops.go          # File operations (read, grep, glob)

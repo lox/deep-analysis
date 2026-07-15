@@ -7,15 +7,19 @@ import (
 	"os"
 	"strings"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/charmbracelet/log"
 	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	openaioption "github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
 )
 
 const (
 	// renovate: depName=openai/gpt-latest
 	DefaultScoutModel = "gpt-5.5"
+	// renovate: depName=anthropic/claude-sonnet-latest
+	DefaultAnthropicScoutModel = "claude-sonnet-5"
 )
 
 // ScoutUsage tracks token usage for scout operations.
@@ -25,26 +29,119 @@ type ScoutUsage struct {
 	Calls        int
 }
 
+type structuredOutputGenerator interface {
+	Generate(ctx context.Context, systemPrompt, prompt string, schema map[string]any) (string, ScoutUsage, error)
+}
+
+type openAIStructuredOutputGenerator struct {
+	client *openai.Client
+	model  string
+	effort string
+}
+
+type anthropicStructuredOutputGenerator struct {
+	client *anthropic.Client
+	model  string
+	effort string
+}
+
 // Scout dispatches high-level tool requests to low-level file operations.
 // It translates natural language queries into specific glob/grep/read operations.
 type Scout struct {
-	client  *openai.Client
-	model   string
-	fileOps FileOps
-	usage   ScoutUsage
+	generator structuredOutputGenerator
+	provider  string
+	model     string
+	fileOps   FileOps
+	usage     ScoutUsage
 }
 
-// NewScout creates a scout dispatcher with the given API key and model.
-func NewScout(apiKey string, model string, fileOps FileOps) *Scout {
+// NewScout creates an OpenAI scout with the selected model and optional effort.
+func NewScout(apiKey, model, effort string, fileOps FileOps) *Scout {
 	if model == "" {
 		model = DefaultScoutModel
 	}
-	client := openai.NewClient(option.WithAPIKey(apiKey))
+	client := openai.NewClient(openaioption.WithAPIKey(apiKey))
 	return &Scout{
-		client:  &client,
-		model:   model,
-		fileOps: fileOps,
+		generator: &openAIStructuredOutputGenerator{client: &client, model: model, effort: effort},
+		provider:  "openai",
+		model:     model,
+		fileOps:   fileOps,
 	}
+}
+
+// NewAnthropicScout creates an Anthropic scout with the selected model and optional effort.
+func NewAnthropicScout(apiKey, model, effort string, fileOps FileOps) *Scout {
+	if model == "" {
+		model = DefaultAnthropicScoutModel
+	}
+	client := anthropic.NewClient(anthropicoption.WithAPIKey(apiKey))
+	return &Scout{
+		generator: &anthropicStructuredOutputGenerator{client: &client, model: model, effort: effort},
+		provider:  "anthropic",
+		model:     model,
+		fileOps:   fileOps,
+	}
+}
+
+// Provider returns the model provider used by the scout.
+func (s *Scout) Provider() string {
+	return s.provider
+}
+
+func (g *openAIStructuredOutputGenerator) Generate(ctx context.Context, systemPrompt, prompt string, schema map[string]any) (string, ScoutUsage, error) {
+	params := responses.ResponseNewParams{
+		Model:        g.model,
+		Instructions: openai.Opt(systemPrompt),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfInputItemList: responses.ResponseInputParam{
+				responses.ResponseInputItemParamOfMessage(prompt, responses.EasyInputMessageRoleUser),
+			},
+		},
+		Text: responses.ResponseTextConfigParam{
+			Format: responses.ResponseFormatTextConfigParamOfJSONSchema("scout_output", schema),
+		},
+	}
+	if g.effort != "" {
+		params.Reasoning = responses.ReasoningParam{Effort: responses.ReasoningEffort(g.effort)}
+	}
+
+	response, err := g.client.Responses.New(ctx, params)
+	if err != nil {
+		return "", ScoutUsage{}, err
+	}
+
+	return extractOpenAIScoutText(response), ScoutUsage{
+		InputTokens:  response.Usage.InputTokens,
+		OutputTokens: response.Usage.OutputTokens,
+		Calls:        1,
+	}, nil
+}
+
+func (g *anthropicStructuredOutputGenerator) Generate(ctx context.Context, systemPrompt, prompt string, schema map[string]any) (string, ScoutUsage, error) {
+	outputConfig := anthropic.OutputConfigParam{
+		Format: anthropic.JSONOutputFormatParam{Schema: schema},
+	}
+	if g.effort != "" {
+		outputConfig.Effort = anthropic.OutputConfigEffort(g.effort)
+	}
+	message, err := g.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     g.model,
+		MaxTokens: 8192,
+		System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		OutputConfig: outputConfig,
+	})
+	if err != nil {
+		return "", ScoutUsage{}, err
+	}
+
+	return extractAnthropicScoutText(message), ScoutUsage{
+		InputTokens:  message.Usage.InputTokens + message.Usage.CacheCreationInputTokens + message.Usage.CacheReadInputTokens,
+		OutputTokens: message.Usage.OutputTokens,
+		Calls:        1,
+	}, nil
 }
 
 // Usage returns the accumulated token usage for this scout.
@@ -103,33 +200,19 @@ Return a JSON object with:
   - "path": path/glob to search in (for grep)
 - "reasoning": brief explanation of your approach`, query, paths, manifest)
 
-	params := responses.ResponseNewParams{
-		Model:        s.model,
-		Instructions: openai.Opt(s.findFilesSystemPrompt()),
-		Input: responses.ResponseNewParamsInputUnion{
-			OfInputItemList: responses.ResponseInputParam{
-				responses.ResponseInputItemParamOfMessage(prompt, responses.EasyInputMessageRoleUser),
-			},
-		},
-		Text: responses.ResponseTextConfigParam{
-			Format: responses.ResponseFormatTextConfigParamOfJSONSchema("find_operations", s.findOperationsSchema()),
-		},
-	}
-
-	response, err := s.client.Responses.New(ctx, params)
+	text, usage, err := s.generator.Generate(ctx, s.findFilesSystemPrompt(), prompt, s.findOperationsSchema())
 	if err != nil {
 		return nil, fmt.Errorf("scout find_files API call failed: %w", err)
 	}
 
-	s.usage.InputTokens += response.Usage.InputTokens
-	s.usage.OutputTokens += response.Usage.OutputTokens
-	s.usage.Calls++
+	s.usage.InputTokens += usage.InputTokens
+	s.usage.OutputTokens += usage.OutputTokens
+	s.usage.Calls += usage.Calls
 
 	log.Debug("Scout find_files response",
-		"input_tokens", response.Usage.InputTokens,
-		"output_tokens", response.Usage.OutputTokens)
+		"input_tokens", usage.InputTokens,
+		"output_tokens", usage.OutputTokens)
 
-	text := extractScoutText(response)
 	if text == "" {
 		return nil, fmt.Errorf("no response from scout")
 	}
@@ -279,33 +362,19 @@ func (s *Scout) SummarizeFiles(ctx context.Context, paths []string, focus string
 
 Return JSON with "summaries" array, each with "path" and "summary".`, focusInstruction, strings.Join(fileContents, "\n\n"))
 
-	params := responses.ResponseNewParams{
-		Model:        s.model,
-		Instructions: openai.Opt("You are a code summarization assistant. Provide clear, concise summaries of source code files. Focus on purpose, key functions/types, and notable patterns."),
-		Input: responses.ResponseNewParamsInputUnion{
-			OfInputItemList: responses.ResponseInputParam{
-				responses.ResponseInputItemParamOfMessage(prompt, responses.EasyInputMessageRoleUser),
-			},
-		},
-		Text: responses.ResponseTextConfigParam{
-			Format: responses.ResponseFormatTextConfigParamOfJSONSchema("file_summaries", s.summariesSchema()),
-		},
-	}
-
-	response, err := s.client.Responses.New(ctx, params)
+	text, usage, err := s.generator.Generate(ctx, "You are a code summarization assistant. Provide clear, concise summaries of source code files. Focus on purpose, key functions/types, and notable patterns.", prompt, s.summariesSchema())
 	if err != nil {
 		return nil, fmt.Errorf("scout summarize_files API call failed: %w", err)
 	}
 
-	s.usage.InputTokens += response.Usage.InputTokens
-	s.usage.OutputTokens += response.Usage.OutputTokens
-	s.usage.Calls++
+	s.usage.InputTokens += usage.InputTokens
+	s.usage.OutputTokens += usage.OutputTokens
+	s.usage.Calls += usage.Calls
 
 	log.Debug("Scout summarize_files response",
-		"input_tokens", response.Usage.InputTokens,
-		"output_tokens", response.Usage.OutputTokens)
+		"input_tokens", usage.InputTokens,
+		"output_tokens", usage.OutputTokens)
 
-	text := extractScoutText(response)
 	if text == "" {
 		return nil, fmt.Errorf("no response from scout")
 	}
@@ -480,7 +549,7 @@ func (s *Scout) summariesSchema() map[string]any {
 	}
 }
 
-func extractScoutText(response *responses.Response) string {
+func extractOpenAIScoutText(response *responses.Response) string {
 	for _, item := range response.Output {
 		if item.Type == "message" {
 			for _, content := range item.Content {
@@ -491,6 +560,16 @@ func extractScoutText(response *responses.Response) string {
 		}
 	}
 	return ""
+}
+
+func extractAnthropicScoutText(message *anthropic.Message) string {
+	var textParts []string
+	for _, block := range message.Content {
+		if block.Type == "text" {
+			textParts = append(textParts, block.Text)
+		}
+	}
+	return strings.Join(textParts, "\n")
 }
 
 func formatBytesScout(b int64) string {
