@@ -40,14 +40,14 @@ If the current process cannot see the newly installed command yet, use `mise exe
 
 Defaults:
 
-- Models: omitted flags use `researcher` and `scout` from `${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml`, then fall back to the compiled OpenAI defaults. Select models for one run with qualified values such as `--researcher anthropic.claude-fable-5` and `--scout openai.gpt-5.5`.
+- Models: omitted flags use `researcher` and `scout` from `${XDG_CONFIG_HOME:-$HOME/.config}/deep-analysis/config.yaml`, then fall back to `openai.gpt-5.5-pro@xhigh` and `openai.gpt-5.5@low`. Select models and effort together with values such as `--researcher anthropic.claude-fable-5@xhigh` and `--scout openai.gpt-5.5@low`.
 - Mixed providers: the provider prefix is independent for each role, so any supported researcher and scout can be combined.
 - Overrides: use the configured defaults unless the user explicitly asks for a model such as Opus.
-- Reasoning effort: `xhigh`
+- Reasoning effort: the optional final `@effort` applies to that model; omit it to use the provider default.
 - Output path: input file, when `--output` is omitted
 - Sessions: `~/.local/state/deep-analysis/sessions/`
 
-Use `--reasoning-effort high` or `medium` when speed or cost matters more than maximum depth.
+Use a researcher suffix such as `@high` or `@medium` when speed or cost matters more than maximum depth.
 
 ## Prompt Shape
 

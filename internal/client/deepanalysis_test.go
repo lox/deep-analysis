@@ -164,7 +164,7 @@ func TestNewForProvidersMixesResearcherAndScout(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			analyzer, err := NewForProviders(tc.researcherProvider, "researcher-key", tc.scoutProvider, "scout-key", nil, "", "")
+			analyzer, err := NewForProviders(tc.researcherProvider, "researcher-key", tc.scoutProvider, "scout-key", nil, "", "", "low")
 			if err != nil {
 				t.Fatalf("NewForProviders: %v", err)
 			}

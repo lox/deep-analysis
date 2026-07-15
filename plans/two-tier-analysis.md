@@ -2,7 +2,7 @@
 
 Goal: cut latency and context churn while keeping quality by separating a researcher model from a scout model for mechanical file operations.
 
-The workflow is provider-neutral, and the researcher and scout providers can be selected independently. OpenAI uses the Responses API; Anthropic uses the Messages API with the same three researcher tools and structured scout outputs. Global role defaults live in the XDG app config and can be overridden independently for one run.
+The workflow is provider-neutral, and the researcher and scout providers can be selected independently. OpenAI uses the Responses API; Anthropic uses the Messages API with the same three researcher tools and structured scout outputs. Global role defaults live in the XDG app config and can be overridden independently for one run, with optional per-model effort encoded as `provider.model@effort`.
 
 ## Architecture: Scout as Tool Dispatcher
 

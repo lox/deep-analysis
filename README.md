@@ -65,8 +65,8 @@ The shared config stores keys as `openai_api_key` and `anthropic_api_key`. `deep
 Set global researcher and scout defaults in the shared config so every run can use the same provider mix:
 
 ```yaml
-researcher: anthropic.claude-opus-4-8
-scout: openai.gpt-5.5
+researcher: anthropic.claude-opus-4-8@xhigh
+scout: openai.gpt-5.5@low
 ```
 
 These fields can live alongside the API keys. Model selection precedence is command-line flag, then global config, then the compiled OpenAI defaults. Running `setup` to add or replace a provider key preserves the configured model defaults.
@@ -93,26 +93,26 @@ Check the installed binary, effective models, and credential sources:
 
 # Use Fable 5 for research and Sonnet 5 for scouting
 ./dist/deep-analysis task.md \
-  --researcher anthropic.claude-fable-5 \
-  --scout anthropic.claude-sonnet-5
+  --researcher anthropic.claude-fable-5@xhigh \
+  --scout anthropic.claude-sonnet-5@low
 
 # Use Opus as the researcher instead
 ./dist/deep-analysis task.md \
-  --researcher anthropic.claude-opus-4-8 \
-  --scout anthropic.claude-sonnet-5
+  --researcher anthropic.claude-opus-4-8@xhigh \
+  --scout anthropic.claude-sonnet-5@low
 
 # Mix providers: Fable researcher with an OpenAI scout
 ./dist/deep-analysis task.md \
-  --researcher anthropic.claude-fable-5 \
-  --scout openai.gpt-5.5
+  --researcher anthropic.claude-fable-5@xhigh \
+  --scout openai.gpt-5.5@low
 
 # Or GPT researcher with an Anthropic scout
 ./dist/deep-analysis task.md \
-  --researcher openai.gpt-5.5-pro \
-  --scout anthropic.claude-sonnet-5
+  --researcher openai.gpt-5.5-pro@xhigh \
+  --scout anthropic.claude-sonnet-5@low
 ```
 
-Qualified model values split at the first dot. The provider must be `openai` or `anthropic`; the remaining model ID is passed through unchanged, so new model names do not require a CLI release.
+Selections use `provider.model[@effort]`. The provider is split at the first dot and optional effort at the final `@`; accepted efforts are `low`, `medium`, `high`, and `xhigh`. Omit the suffix to use the provider's model default. `@` needs no escaping in common shells or YAML.
 
 ### Follow-up Questions
 
@@ -141,9 +141,9 @@ The AI will see your previous analysis and focus on new questions.
 | `--continue` | Session ID to continue a previous conversation |
 | `--reset` | Start fresh, ignoring stored session state |
 | `--cwd` | Working directory for file operations |
-| `--researcher` | Researcher as `provider.model` (overrides global config; compiled default: `openai.gpt-5.5-pro`) |
-| `--scout` | Scout as `provider.model` (overrides global config; compiled default: `openai.gpt-5.5`) |
-| `--reasoning-effort` | Reasoning effort: low, medium, high, xhigh (default: xhigh) |
+| `--researcher` | Researcher as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.5-pro@xhigh`) |
+| `--scout` | Scout as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.5@low`) |
+| `--reasoning-effort` | Deprecated researcher effort override; cannot accompany `@effort` in `--researcher` |
 | `--debug` | Enable debug logging |
 
 ### Commands

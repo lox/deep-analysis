@@ -35,15 +35,24 @@ type AnalyzeCmd struct {
 	Debug           bool   `help:"Enable debug logging"`
 	Continue        string `help:"Session id to continue a previous conversation" name:"continue"`
 	Reset           bool   `help:"Ignore stored session state and start a fresh conversation"`
-	Researcher      string `help:"Researcher as provider.model (overrides global config; default: openai.gpt-5.5-pro)"`
-	Scout           string `help:"Scout as provider.model (overrides global config; default: openai.gpt-5.5)"`
-	ReasoningEffort string `help:"Reasoning effort for researcher: low, medium, high, xhigh (default: xhigh)" default:"xhigh" enum:"low,medium,high,xhigh"`
+	Researcher      string `help:"Researcher as provider.model@effort (overrides global config; default: openai.gpt-5.5-pro@xhigh)"`
+	Scout           string `help:"Scout as provider.model@effort (overrides global config; default: openai.gpt-5.5@low)"`
+	ReasoningEffort string `help:"Deprecated researcher effort override: low, medium, high, xhigh"`
 	Cwd             string `help:"Working directory for file operations (default: current directory)"`
 }
 
 type modelSelection struct {
 	Provider string
 	Model    string
+	Effort   string
+}
+
+func (s modelSelection) String() string {
+	value := s.Provider + "." + s.Model
+	if s.Effort != "" {
+		value += "@" + s.Effort
+	}
+	return value
 }
 
 type SetupCmd struct {
@@ -118,7 +127,7 @@ func (c *AnalyzeCmd) Run() error {
 	cl, err := client.NewForProviders(
 		researcher.Provider, researcherAPIKey,
 		scout.Provider, scoutAPIKey,
-		f, researcher.Model, scout.Model,
+		f, researcher.Model, scout.Model, scout.Effort,
 	)
 	if err != nil {
 		return err
@@ -175,10 +184,11 @@ func (c *AnalyzeCmd) Run() error {
 		"scout_provider", scout.Provider,
 		"researcher_model", researcher.Model,
 		"scout_model", scout.Model,
-		"reasoning_effort", c.ReasoningEffort)
+		"researcher_effort", researcher.Effort,
+		"scout_effort", scout.Effort)
 	result, err := cl.Analyze(ctx, document, client.AnalysisOptions{
 		PreviousResponseID: previousResponseID,
-		ReasoningEffort:    c.ReasoningEffort,
+		ReasoningEffort:    researcher.Effort,
 	})
 	if err != nil {
 		return fmt.Errorf("analysis failed: %w", err)
@@ -217,18 +227,19 @@ func (c *AnalyzeCmd) Run() error {
 
 func (c *AnalyzeCmd) modelSelections(config appConfig) (researcher, scout modelSelection, err error) {
 	researcherValue := strings.TrimSpace(c.Researcher)
+	researcherFromCLI := researcherValue != ""
 	if researcherValue == "" {
 		researcherValue = strings.TrimSpace(config.Researcher)
 	}
 	if researcherValue == "" {
-		researcherValue = client.OpenAIProvider + "." + client.DefaultResearcherModel
+		researcherValue = client.OpenAIProvider + "." + client.DefaultResearcherModel + "@xhigh"
 	}
 	scoutValue := strings.TrimSpace(c.Scout)
 	if scoutValue == "" {
 		scoutValue = strings.TrimSpace(config.Scout)
 	}
 	if scoutValue == "" {
-		scoutValue = client.OpenAIProvider + "." + agent.DefaultScoutModel
+		scoutValue = client.OpenAIProvider + "." + agent.DefaultScoutModel + "@low"
 	}
 
 	researcher, err = parseModelSelection("researcher", researcherValue)
@@ -239,18 +250,40 @@ func (c *AnalyzeCmd) modelSelections(config appConfig) (researcher, scout modelS
 	if err != nil {
 		return modelSelection{}, modelSelection{}, err
 	}
+	if c.ReasoningEffort != "" {
+		if !validReasoningEffort(c.ReasoningEffort) {
+			return modelSelection{}, modelSelection{}, fmt.Errorf("--reasoning-effort must be low, medium, high, or xhigh, got %q", c.ReasoningEffort)
+		}
+		if researcher.Effort != "" && researcherFromCLI {
+			return modelSelection{}, modelSelection{}, fmt.Errorf("researcher effort is set in both --researcher and --reasoning-effort")
+		}
+		researcher.Effort = c.ReasoningEffort
+	}
 	return researcher, scout, nil
 }
 
 func parseModelSelection(role, value string) (modelSelection, error) {
+	original := value
+	effort := ""
+	if index := strings.LastIndex(value, "@"); index >= 0 {
+		effort = value[index+1:]
+		value = value[:index]
+		if !validReasoningEffort(effort) {
+			return modelSelection{}, fmt.Errorf("%s effort must be low, medium, high, or xhigh, got %q", role, effort)
+		}
+	}
 	provider, model, ok := strings.Cut(value, ".")
 	if !ok || provider == "" || model == "" {
-		return modelSelection{}, fmt.Errorf("%s must be provider.model, got %q", role, value)
+		return modelSelection{}, fmt.Errorf("%s must be provider.model[@effort], got %q", role, original)
 	}
 	if provider != client.OpenAIProvider && provider != client.AnthropicProvider {
 		return modelSelection{}, fmt.Errorf("unsupported %s provider %q", role, provider)
 	}
-	return modelSelection{Provider: provider, Model: model}, nil
+	return modelSelection{Provider: provider, Model: model, Effort: effort}, nil
+}
+
+func validReasoningEffort(effort string) bool {
+	return effort == "low" || effort == "medium" || effort == "high" || effort == "xhigh"
 }
 
 func providersForSession(session *client.Session) (researcherProvider, scoutProvider string) {
@@ -564,8 +597,8 @@ func runDoctor(w io.Writer) error {
 	if strings.TrimSpace(config.Scout) != "" {
 		scoutSource = configPath
 	}
-	fmt.Fprintf(w, "models.researcher: %s.%s (%s)\n", researcher.Provider, researcher.Model, researcherSource)
-	fmt.Fprintf(w, "models.scout: %s.%s (%s)\n", scout.Provider, scout.Model, scoutSource)
+	fmt.Fprintf(w, "models.researcher: %s (%s)\n", researcher, researcherSource)
+	fmt.Fprintf(w, "models.scout: %s (%s)\n", scout, scoutSource)
 
 	for _, provider := range []string{client.OpenAIProvider, client.AnthropicProvider} {
 		_, source, err := loadProviderAPIKey(provider)

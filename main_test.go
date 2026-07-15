@@ -166,7 +166,7 @@ func TestSaveProviderConfigPreservesOtherProvider(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("researcher: anthropic.claude-opus-4-8\nscout: openai.gpt-5.6-terra\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("researcher: anthropic.claude-opus-4-8@xhigh\nscout: openai.gpt-5.6-terra@low\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -192,7 +192,7 @@ func TestSaveProviderConfigPreservesOtherProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load app config: %v", err)
 	}
-	if config.Researcher != "anthropic.claude-opus-4-8" || config.Scout != "openai.gpt-5.6-terra" {
+	if config.Researcher != "anthropic.claude-opus-4-8@xhigh" || config.Scout != "openai.gpt-5.6-terra@low" {
 		t.Fatalf("setup changed model defaults: %+v", config)
 	}
 }
@@ -235,8 +235,8 @@ func TestCLIParsesSetupAndDefaultAnalyze(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default model selections: %v", err)
 	}
-	if defaultResearcher != (modelSelection{Provider: client.OpenAIProvider, Model: client.DefaultResearcherModel}) ||
-		defaultScout.Provider != client.OpenAIProvider {
+	if defaultResearcher != (modelSelection{Provider: client.OpenAIProvider, Model: client.DefaultResearcherModel, Effort: "xhigh"}) ||
+		defaultScout != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.5", Effort: "low"}) {
 		t.Fatalf("default selections = %+v, %+v", defaultResearcher, defaultScout)
 	}
 
@@ -261,41 +261,41 @@ func TestCLIParsesSetupAndDefaultAnalyze(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kong.New mixed: %v", err)
 	}
-	if _, err := mixedParser.Parse([]string{"notes.md", "--researcher", "anthropic.claude-fable-5", "--scout", "openai.gpt-5.6-terra"}); err != nil {
+	if _, err := mixedParser.Parse([]string{"notes.md", "--researcher", "anthropic.claude-fable-5@xhigh", "--scout", "openai.gpt-5.6-terra@low"}); err != nil {
 		t.Fatalf("Parse mixed analyze: %v", err)
 	}
 	researcher, scout, err = mixedCLI.Analyze.modelSelections(appConfig{})
 	if err != nil {
 		t.Fatalf("mixed model selections: %v", err)
 	}
-	if researcher != (modelSelection{Provider: client.AnthropicProvider, Model: "claude-fable-5"}) ||
-		scout != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.6-terra"}) {
+	if researcher != (modelSelection{Provider: client.AnthropicProvider, Model: "claude-fable-5", Effort: "xhigh"}) ||
+		scout != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.6-terra", Effort: "low"}) {
 		t.Fatalf("mixed selections = %+v, %+v", researcher, scout)
 	}
 }
 
 func TestModelSelectionsUseConfigAndCLIOverrides(t *testing.T) {
 	config := appConfig{
-		Researcher: "anthropic.claude-opus-4-8",
-		Scout:      "openai.gpt-5.6-terra",
+		Researcher: "anthropic.claude-opus-4-8@xhigh",
+		Scout:      "openai.gpt-5.6-terra@low",
 	}
 
 	researcher, scout, err := (&AnalyzeCmd{}).modelSelections(config)
 	if err != nil {
 		t.Fatalf("config model selections: %v", err)
 	}
-	if researcher != (modelSelection{Provider: client.AnthropicProvider, Model: "claude-opus-4-8"}) ||
-		scout != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.6-terra"}) {
+	if researcher != (modelSelection{Provider: client.AnthropicProvider, Model: "claude-opus-4-8", Effort: "xhigh"}) ||
+		scout != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.6-terra", Effort: "low"}) {
 		t.Fatalf("config selections = %+v, %+v", researcher, scout)
 	}
 
-	command := AnalyzeCmd{Researcher: "openai.gpt-5.5-pro"}
+	command := AnalyzeCmd{Researcher: "openai.gpt-5.5-pro@medium"}
 	researcher, scout, err = command.modelSelections(config)
 	if err != nil {
 		t.Fatalf("CLI override model selections: %v", err)
 	}
-	if researcher != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.5-pro"}) ||
-		scout != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.6-terra"}) {
+	if researcher != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.5-pro", Effort: "medium"}) ||
+		scout != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.6-terra", Effort: "low"}) {
 		t.Fatalf("CLI override selections = %+v, %+v", researcher, scout)
 	}
 }
@@ -314,7 +314,7 @@ func TestLoadAppConfigReadsGlobalModelDefaults(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("researcher: anthropic.claude-opus-4-8\nscout: openai.gpt-5.6-terra\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("researcher: anthropic.claude-opus-4-8@xhigh\nscout: openai.gpt-5.6-terra@low\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -322,24 +322,61 @@ func TestLoadAppConfigReadsGlobalModelDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadAppConfig: %v", err)
 	}
-	if gotPath != path || config.Researcher != "anthropic.claude-opus-4-8" || config.Scout != "openai.gpt-5.6-terra" {
+	if gotPath != path || config.Researcher != "anthropic.claude-opus-4-8@xhigh" || config.Scout != "openai.gpt-5.6-terra@low" {
 		t.Fatalf("loaded config path=%q config=%+v", gotPath, config)
 	}
 }
 
 func TestParseModelSelection(t *testing.T) {
-	selection, err := parseModelSelection("researcher", "openai.gpt-5.6-terra.preview")
+	selection, err := parseModelSelection("researcher", "openai.gpt@preview@xhigh")
 	if err != nil {
 		t.Fatalf("parseModelSelection: %v", err)
 	}
-	if selection != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt-5.6-terra.preview"}) {
+	if selection != (modelSelection{Provider: client.OpenAIProvider, Model: "gpt@preview", Effort: "xhigh"}) {
 		t.Fatalf("selection = %+v", selection)
 	}
+	if selection.String() != "openai.gpt@preview@xhigh" {
+		t.Fatalf("selection string = %q", selection)
+	}
 
-	for _, value := range []string{"gpt-5.6", ".gpt-5.6", "openai.", "other.model"} {
+	for _, value := range []string{"gpt-5.6", ".gpt-5.6", "openai.", "other.model", "openai.gpt@", "openai.gpt@turbo"} {
 		if _, err := parseModelSelection("researcher", value); err == nil {
 			t.Fatalf("parseModelSelection accepted %q", value)
 		}
+	}
+}
+
+func TestLegacyReasoningEffortOverride(t *testing.T) {
+	researcher, _, err := (&AnalyzeCmd{ReasoningEffort: "high"}).modelSelections(appConfig{})
+	if err != nil {
+		t.Fatalf("legacy effort with compiled default: %v", err)
+	}
+	if researcher.Effort != "high" {
+		t.Fatalf("compiled researcher effort = %q, want high", researcher.Effort)
+	}
+	researcher, _, err = (&AnalyzeCmd{ReasoningEffort: "medium"}).modelSelections(appConfig{Researcher: "anthropic.claude-opus-4-8@xhigh"})
+	if err != nil {
+		t.Fatalf("legacy effort overriding config: %v", err)
+	}
+	if researcher.Effort != "medium" {
+		t.Fatalf("configured researcher effort = %q, want medium", researcher.Effort)
+	}
+
+	researcher, _, err = (&AnalyzeCmd{Researcher: "anthropic.claude-opus-4-8", ReasoningEffort: "high"}).modelSelections(appConfig{})
+	if err != nil {
+		t.Fatalf("legacy effort override: %v", err)
+	}
+	if researcher.Effort != "high" {
+		t.Fatalf("researcher effort = %q, want high", researcher.Effort)
+	}
+
+	_, _, err = (&AnalyzeCmd{Researcher: "anthropic.claude-opus-4-8@xhigh", ReasoningEffort: "high"}).modelSelections(appConfig{})
+	if err == nil {
+		t.Fatal("modelSelections accepted effort in both selection and legacy flag")
+	}
+	_, _, err = (&AnalyzeCmd{Researcher: "anthropic.claude-opus-4-8", ReasoningEffort: "turbo"}).modelSelections(appConfig{})
+	if err == nil {
+		t.Fatal("modelSelections accepted an invalid legacy effort")
 	}
 }
 
@@ -373,7 +410,7 @@ func TestDoctorReportsCredentialSourceWithoutSecret(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("researcher: anthropic.claude-opus-4-8\nscout: openai.gpt-5.6-terra\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("researcher: anthropic.claude-opus-4-8@xhigh\nscout: openai.gpt-5.6-terra@low\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -386,8 +423,8 @@ func TestDoctorReportsCredentialSourceWithoutSecret(t *testing.T) {
 	if !strings.Contains(got, "credentials.openai: ok (OPENAI_API_KEY)") {
 		t.Fatalf("doctor output missing credential source:\n%s", got)
 	}
-	if !strings.Contains(got, "models.researcher: anthropic.claude-opus-4-8 ("+configPath+")") ||
-		!strings.Contains(got, "models.scout: openai.gpt-5.6-terra ("+configPath+")") {
+	if !strings.Contains(got, "models.researcher: anthropic.claude-opus-4-8@xhigh ("+configPath+")") ||
+		!strings.Contains(got, "models.scout: openai.gpt-5.6-terra@low ("+configPath+")") {
 		t.Fatalf("doctor output missing effective models:\n%s", got)
 	}
 	if strings.Contains(got, "secret-key") {

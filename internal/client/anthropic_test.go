@@ -76,7 +76,7 @@ func TestAnthropicAnalyzeRunsToolLoop(t *testing.T) {
 		&apiClient,
 		"claude-fable-5",
 		"claude-sonnet-5",
-		agent.NewAnthropicScout("test-key", "claude-sonnet-5", anthropicTestFileOps{}),
+		agent.NewAnthropicScout("test-key", "claude-sonnet-5", "low", anthropicTestFileOps{}),
 	)
 
 	result, err := analysisClient.Analyze(context.Background(), "Analyze example.go", AnalysisOptions{ReasoningEffort: "xhigh"})
@@ -94,6 +94,12 @@ func TestAnthropicAnalyzeRunsToolLoop(t *testing.T) {
 	}
 	if requests[0]["max_tokens"] != float64(maxAnthropicOutputTokens) {
 		t.Fatalf("max_tokens = %#v, want %d", requests[0]["max_tokens"], maxAnthropicOutputTokens)
+	}
+	for i, request := range requests {
+		outputConfig := request["output_config"].(map[string]any)
+		if outputConfig["effort"] != "xhigh" {
+			t.Fatalf("request %d effort = %#v, want xhigh", i+1, outputConfig["effort"])
+		}
 	}
 	messages, ok := requests[1]["messages"].([]any)
 	if !ok || len(messages) != 3 {
@@ -185,7 +191,7 @@ func newTestAnthropicAnalysisClient(baseURL string) *AnthropicDeepAnalysisClient
 		&apiClient,
 		"claude-fable-5",
 		"claude-sonnet-5",
-		agent.NewAnthropicScout("test-key", "claude-sonnet-5", anthropicTestFileOps{}),
+		agent.NewAnthropicScout("test-key", "claude-sonnet-5", "low", anthropicTestFileOps{}),
 	)
 }
 

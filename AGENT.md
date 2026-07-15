@@ -49,20 +49,20 @@ deep-analysis --cwd /path/to/project task.md
 # Continue a session
 deep-analysis task.md --continue <session-id>
 
-# Use lower reasoning effort for faster responses
-deep-analysis --reasoning-effort high task.md
+# Use lower researcher effort for faster responses
+deep-analysis task.md --researcher openai.gpt-5.5-pro@high
 
 # Check install/config state
 deep-analysis doctor
 
 # Use Fable research with a Sonnet scout
-deep-analysis task.md --researcher anthropic.claude-fable-5 --scout anthropic.claude-sonnet-5
+deep-analysis task.md --researcher anthropic.claude-fable-5@xhigh --scout anthropic.claude-sonnet-5@low
 
 # Select Opus explicitly
-deep-analysis task.md --researcher anthropic.claude-opus-4-8 --scout anthropic.claude-sonnet-5
+deep-analysis task.md --researcher anthropic.claude-opus-4-8@xhigh --scout anthropic.claude-sonnet-5@low
 
 # Mix Fable research with an OpenAI scout
-deep-analysis task.md --researcher anthropic.claude-fable-5 --scout openai.gpt-5.5
+deep-analysis task.md --researcher anthropic.claude-fable-5@xhigh --scout openai.gpt-5.5@low
 ```
 
 ## Coding Style

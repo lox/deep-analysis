@@ -40,7 +40,7 @@ func DefaultModelsForProvider(provider string) (researcherModel, scoutModel stri
 }
 
 // NewForProviders creates an analyzer with independently selected researcher and scout providers.
-func NewForProviders(researcherProvider, researcherAPIKey, scoutProvider, scoutAPIKey string, fileOps agent.FileOps, researcherModel, scoutModel string) (Analyzer, error) {
+func NewForProviders(researcherProvider, researcherAPIKey, scoutProvider, scoutAPIKey string, fileOps agent.FileOps, researcherModel, scoutModel, scoutEffort string) (Analyzer, error) {
 	if researcherModel == "" {
 		defaultResearcherModel, _, err := DefaultModelsForProvider(researcherProvider)
 		if err != nil {
@@ -59,9 +59,9 @@ func NewForProviders(researcherProvider, researcherAPIKey, scoutProvider, scoutA
 	var scout *agent.Scout
 	switch scoutProvider {
 	case OpenAIProvider:
-		scout = agent.NewScout(scoutAPIKey, scoutModel, fileOps)
+		scout = agent.NewScout(scoutAPIKey, scoutModel, scoutEffort, fileOps)
 	case AnthropicProvider:
-		scout = agent.NewAnthropicScout(scoutAPIKey, scoutModel, fileOps)
+		scout = agent.NewAnthropicScout(scoutAPIKey, scoutModel, scoutEffort, fileOps)
 	default:
 		return nil, fmt.Errorf("unsupported scout provider %q", scoutProvider)
 	}
@@ -90,7 +90,7 @@ type DeepAnalysisClient struct {
 // AnalysisOptions controls request behavior.
 type AnalysisOptions struct {
 	PreviousResponseID string
-	ReasoningEffort    string // Reasoning effort: low, medium, high, xhigh (default: xhigh)
+	ReasoningEffort    string // Reasoning effort: low, medium, high, xhigh; empty uses the provider default.
 }
 
 // AnalysisResult contains the final model output and metadata.
@@ -101,7 +101,7 @@ type AnalysisResult struct {
 
 // New creates a new DeepAnalysisClient instance.
 func New(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string) *DeepAnalysisClient {
-	return newOpenAIWithScout(apiKey, fileOps, researcherModel, scoutModel, agent.NewScout(apiKey, scoutModel, fileOps))
+	return newOpenAIWithScout(apiKey, fileOps, researcherModel, scoutModel, agent.NewScout(apiKey, scoutModel, "", fileOps))
 }
 
 func newOpenAIWithScout(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string, scout *agent.Scout) *DeepAnalysisClient {
@@ -145,7 +145,9 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 		Instructions:   openai.Opt(c.buildSystemPrompt()),
 		Tools:          c.tools,
 		PromptCacheKey: openai.Opt(cacheKey),
-		Reasoning:      buildReasoningParam(opts.ReasoningEffort),
+	}
+	if opts.ReasoningEffort != "" {
+		params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
 	}
 
 	inputItems := responses.ResponseInputParam{
@@ -248,6 +250,9 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 				OfInputItemList: toolOutputs,
 			},
 			Tools: c.tools,
+		}
+		if opts.ReasoningEffort != "" {
+			params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
 		}
 
 		response, err = c.client.Responses.New(ctx, params)

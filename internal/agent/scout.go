@@ -36,11 +36,13 @@ type structuredOutputGenerator interface {
 type openAIStructuredOutputGenerator struct {
 	client *openai.Client
 	model  string
+	effort string
 }
 
 type anthropicStructuredOutputGenerator struct {
 	client *anthropic.Client
 	model  string
+	effort string
 }
 
 // Scout dispatches high-level tool requests to low-level file operations.
@@ -53,28 +55,28 @@ type Scout struct {
 	usage     ScoutUsage
 }
 
-// NewScout creates a scout dispatcher with the given API key and model.
-func NewScout(apiKey string, model string, fileOps FileOps) *Scout {
+// NewScout creates an OpenAI scout with the selected model and optional effort.
+func NewScout(apiKey, model, effort string, fileOps FileOps) *Scout {
 	if model == "" {
 		model = DefaultScoutModel
 	}
 	client := openai.NewClient(openaioption.WithAPIKey(apiKey))
 	return &Scout{
-		generator: &openAIStructuredOutputGenerator{client: &client, model: model},
+		generator: &openAIStructuredOutputGenerator{client: &client, model: model, effort: effort},
 		provider:  "openai",
 		model:     model,
 		fileOps:   fileOps,
 	}
 }
 
-// NewAnthropicScout creates a scout dispatcher backed by Anthropic's Messages API.
-func NewAnthropicScout(apiKey string, model string, fileOps FileOps) *Scout {
+// NewAnthropicScout creates an Anthropic scout with the selected model and optional effort.
+func NewAnthropicScout(apiKey, model, effort string, fileOps FileOps) *Scout {
 	if model == "" {
 		model = DefaultAnthropicScoutModel
 	}
 	client := anthropic.NewClient(anthropicoption.WithAPIKey(apiKey))
 	return &Scout{
-		generator: &anthropicStructuredOutputGenerator{client: &client, model: model},
+		generator: &anthropicStructuredOutputGenerator{client: &client, model: model, effort: effort},
 		provider:  "anthropic",
 		model:     model,
 		fileOps:   fileOps,
@@ -99,6 +101,9 @@ func (g *openAIStructuredOutputGenerator) Generate(ctx context.Context, systemPr
 			Format: responses.ResponseFormatTextConfigParamOfJSONSchema("scout_output", schema),
 		},
 	}
+	if g.effort != "" {
+		params.Reasoning = responses.ReasoningParam{Effort: responses.ReasoningEffort(g.effort)}
+	}
 
 	response, err := g.client.Responses.New(ctx, params)
 	if err != nil {
@@ -113,6 +118,12 @@ func (g *openAIStructuredOutputGenerator) Generate(ctx context.Context, systemPr
 }
 
 func (g *anthropicStructuredOutputGenerator) Generate(ctx context.Context, systemPrompt, prompt string, schema map[string]any) (string, ScoutUsage, error) {
+	outputConfig := anthropic.OutputConfigParam{
+		Format: anthropic.JSONOutputFormatParam{Schema: schema},
+	}
+	if g.effort != "" {
+		outputConfig.Effort = anthropic.OutputConfigEffort(g.effort)
+	}
 	message, err := g.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     g.model,
 		MaxTokens: 8192,
@@ -120,9 +131,7 @@ func (g *anthropicStructuredOutputGenerator) Generate(ctx context.Context, syste
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
 		},
-		OutputConfig: anthropic.OutputConfigParam{
-			Format: anthropic.JSONOutputFormatParam{Schema: schema},
-		},
+		OutputConfig: outputConfig,
 	})
 	if err != nil {
 		return "", ScoutUsage{}, err

@@ -35,7 +35,7 @@ func NewAnthropic(apiKey string, fileOps agent.FileOps, researcherModel, scoutMo
 	if scoutModel == "" {
 		scoutModel = DefaultAnthropicScoutModel
 	}
-	return newAnthropicWithScout(apiKey, fileOps, researcherModel, scoutModel, agent.NewAnthropicScout(apiKey, scoutModel, fileOps))
+	return newAnthropicWithScout(apiKey, fileOps, researcherModel, scoutModel, agent.NewAnthropicScout(apiKey, scoutModel, "", fileOps))
 }
 
 func newAnthropicWithScout(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string, scout *agent.Scout) *AnthropicDeepAnalysisClient {
