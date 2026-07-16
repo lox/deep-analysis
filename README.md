@@ -145,6 +145,7 @@ The AI will see your previous analysis and focus on new questions.
 | `--scout` | Scout as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.5@low`) |
 | `--reasoning-effort` | Deprecated researcher effort override; cannot accompany `@effort` in `--researcher` |
 | `--debug` | Enable debug logging |
+| `--version` | Print the installed version and exit |
 
 ### Commands
 
@@ -153,6 +154,7 @@ The AI will see your previous analysis and focus on new questions.
 | `analyze <input>` | Analyze a markdown document (default command) |
 | `setup [--provider openai\|anthropic]` | Prompt for a provider API key and write XDG config |
 | `doctor` | Check the installed binary, effective models, and credential configuration |
+| `version` | Print the installed version and exit |
 
 ## How It Works
 
