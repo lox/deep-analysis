@@ -24,9 +24,11 @@ var (
 )
 
 type CLI struct {
-	Analyze AnalyzeCmd `cmd:"" default:"withargs" help:"Analyze a markdown document"`
-	Setup   SetupCmd   `cmd:"" help:"Create XDG config and save a provider API key"`
-	Doctor  DoctorCmd  `cmd:"" help:"Check install, effective models, and credential configuration"`
+	VersionFlag kong.VersionFlag `name:"version" help:"Print version and exit"`
+	Analyze     AnalyzeCmd       `cmd:"" default:"withargs" help:"Analyze a markdown document"`
+	Setup       SetupCmd         `cmd:"" help:"Create XDG config and save a provider API key"`
+	Doctor      DoctorCmd        `cmd:"" help:"Check install, effective models, and credential configuration"`
+	Version     VersionCmd       `cmd:"" help:"Print version and exit"`
 }
 
 type AnalyzeCmd struct {
@@ -60,6 +62,8 @@ type SetupCmd struct {
 }
 
 type DoctorCmd struct{}
+
+type VersionCmd struct{}
 
 func (c *AnalyzeCmd) Run() error {
 	// Configure logging
@@ -321,6 +325,15 @@ func (c *SetupCmd) Run() error {
 
 func (c *DoctorCmd) Run() error {
 	return runDoctor(os.Stdout)
+}
+
+func (c *VersionCmd) Run() error {
+	return writeVersion(os.Stdout, version)
+}
+
+func writeVersion(w io.Writer, value string) error {
+	_, err := fmt.Fprintln(w, value)
+	return err
 }
 
 func main() {

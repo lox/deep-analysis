@@ -274,6 +274,50 @@ func TestCLIParsesSetupAndDefaultAnalyze(t *testing.T) {
 	}
 }
 
+func TestVersionInterfaces(t *testing.T) {
+	const testVersion = "1.2.3"
+
+	var commandCLI CLI
+	commandParser, err := kong.New(&commandCLI)
+	if err != nil {
+		t.Fatalf("kong.New version command: %v", err)
+	}
+	commandContext, err := commandParser.Parse([]string{"version"})
+	if err != nil {
+		t.Fatalf("Parse version command: %v", err)
+	}
+	if got := commandContext.Command(); got != "version" {
+		t.Fatalf("parsed command = %q, want version", got)
+	}
+
+	var flagCLI CLI
+	var flagOutput bytes.Buffer
+	exitCode := -1
+	flagParser, err := kong.New(&flagCLI,
+		kong.Vars{"version": testVersion},
+		kong.Writers(&flagOutput, &flagOutput),
+		kong.Exit(func(code int) { exitCode = code }),
+	)
+	if err != nil {
+		t.Fatalf("kong.New version flag: %v", err)
+	}
+	_, _ = flagParser.Parse([]string{"--version"})
+	if exitCode != 0 {
+		t.Fatalf("--version exit code = %d, want 0", exitCode)
+	}
+	if got := flagOutput.String(); got != testVersion+"\n" {
+		t.Fatalf("--version output = %q, want %q", got, testVersion+"\n")
+	}
+
+	var commandOutput bytes.Buffer
+	if err := writeVersion(&commandOutput, testVersion); err != nil {
+		t.Fatalf("writeVersion: %v", err)
+	}
+	if got := commandOutput.String(); got != testVersion+"\n" {
+		t.Fatalf("version output = %q, want %q", got, testVersion+"\n")
+	}
+}
+
 func TestModelSelectionsUseConfigAndCLIOverrides(t *testing.T) {
 	config := appConfig{
 		Researcher: "anthropic.claude-opus-4-8@xhigh",
