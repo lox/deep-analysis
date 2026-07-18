@@ -96,6 +96,13 @@ func TestAnthropicAnalyzeRunsToolLoop(t *testing.T) {
 		t.Fatalf("max_tokens = %#v, want %d", requests[0]["max_tokens"], maxAnthropicOutputTokens)
 	}
 	for i, request := range requests {
+		cacheControl, ok := request["cache_control"].(map[string]any)
+		if !ok || cacheControl["type"] != "ephemeral" {
+			t.Fatalf("request %d cache_control = %#v, want ephemeral", i+1, request["cache_control"])
+		}
+		if _, ok := cacheControl["ttl"]; ok {
+			t.Fatalf("request %d cache_control = %#v, want default five-minute TTL", i+1, cacheControl)
+		}
 		outputConfig := request["output_config"].(map[string]any)
 		if outputConfig["effort"] != "xhigh" {
 			t.Fatalf("request %d effort = %#v, want xhigh", i+1, outputConfig["effort"])
@@ -110,6 +117,48 @@ func TestAnthropicAnalyzeRunsToolLoop(t *testing.T) {
 	toolResult := content[0].(map[string]any)
 	if toolResult["type"] != "tool_result" || toolResult["tool_use_id"] != "tool_1" {
 		t.Fatalf("tool result = %#v", toolResult)
+	}
+}
+
+func TestEstimateAnthropicCostIncludesCacheWritePremiums(t *testing.T) {
+	usage := anthropicUsageTotals{
+		inputTokens:                1_000_000,
+		cacheCreation5mInputTokens: 1_000_000,
+		cacheCreation1hInputTokens: 1_000_000,
+		cacheReadInputTokens:       1_000_000,
+		outputTokens:               1_000_000,
+	}
+
+	const want = 93.5 // $10 input + $12.50 5m write + $20 1h write + $1 read + $50 output
+	if got := estimateAnthropicCost("claude-fable-5", usage); got != want {
+		t.Fatalf("estimateAnthropicCost = %v, want %v", got, want)
+	}
+}
+
+func TestAddAnthropicUsageTracksCacheCategories(t *testing.T) {
+	message := &anthropic.Message{Usage: anthropic.Usage{
+		InputTokens:              100,
+		CacheCreationInputTokens: 200,
+		CacheCreation: anthropic.CacheCreation{
+			Ephemeral5mInputTokens: 125,
+			Ephemeral1hInputTokens: 75,
+		},
+		CacheReadInputTokens: 300,
+		OutputTokens:         400,
+	}}
+	var usage anthropicUsageTotals
+
+	addAnthropicUsage(message, &usage)
+
+	if usage.inputTokens != 100 ||
+		usage.cacheCreation5mInputTokens != 125 ||
+		usage.cacheCreation1hInputTokens != 75 ||
+		usage.cacheReadInputTokens != 300 ||
+		usage.outputTokens != 400 ||
+		usage.apiCalls != 1 ||
+		usage.cacheCreationInputTokens() != 200 ||
+		usage.totalInputTokens() != 600 {
+		t.Fatalf("usage = %+v", usage)
 	}
 }
 

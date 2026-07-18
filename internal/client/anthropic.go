@@ -27,6 +27,23 @@ type AnthropicDeepAnalysisClient struct {
 	tools           []anthropic.ToolUnionParam
 }
 
+type anthropicUsageTotals struct {
+	inputTokens                int64
+	cacheCreation5mInputTokens int64
+	cacheCreation1hInputTokens int64
+	cacheReadInputTokens       int64
+	outputTokens               int64
+	apiCalls                   int
+}
+
+func (u anthropicUsageTotals) cacheCreationInputTokens() int64 {
+	return u.cacheCreation5mInputTokens + u.cacheCreation1hInputTokens
+}
+
+func (u anthropicUsageTotals) totalInputTokens() int64 {
+	return u.inputTokens + u.cacheCreationInputTokens() + u.cacheReadInputTokens
+}
+
 // NewAnthropic creates an Anthropic-backed analysis client.
 func NewAnthropic(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string) *AnthropicDeepAnalysisClient {
 	if researcherModel == "" {
@@ -73,8 +90,9 @@ func (c *AnthropicDeepAnalysisClient) Analyze(ctx context.Context, document stri
 	log.Debug("Starting Anthropic analysis", "bytes", len(document))
 
 	params := anthropic.MessageNewParams{
-		Model:     c.researcherModel,
-		MaxTokens: maxAnthropicOutputTokens,
+		Model:        c.researcherModel,
+		MaxTokens:    maxAnthropicOutputTokens,
+		CacheControl: anthropic.NewCacheControlEphemeralParam(),
 		System: []anthropic.TextBlockParam{
 			{Text: c.runtime.buildSystemPrompt()},
 		},
@@ -92,16 +110,13 @@ func (c *AnthropicDeepAnalysisClient) Analyze(ctx context.Context, document stri
 		}
 	}
 
-	var totalInputTokens int64
-	var totalOutputTokens int64
-	var totalCachedTokens int64
-	var apiCalls int
+	var usage anthropicUsageTotals
 
 	message, err := c.newMessage(ctx, params)
 	if err != nil {
 		return AnalysisResult{}, fmt.Errorf("anthropic API error: %w", err)
 	}
-	addAnthropicUsage(message, &totalInputTokens, &totalOutputTokens, &totalCachedTokens, &apiCalls)
+	addAnthropicUsage(message, &usage)
 
 	for i := 0; i < maxIterations; i++ {
 		switch message.StopReason {
@@ -115,7 +130,7 @@ func (c *AnthropicDeepAnalysisClient) Analyze(ctx context.Context, document stri
 			if err != nil {
 				return AnalysisResult{}, fmt.Errorf("anthropic API error: %w", err)
 			}
-			addAnthropicUsage(message, &totalInputTokens, &totalOutputTokens, &totalCachedTokens, &apiCalls)
+			addAnthropicUsage(message, &usage)
 			continue
 		}
 
@@ -128,7 +143,7 @@ func (c *AnthropicDeepAnalysisClient) Analyze(ctx context.Context, document stri
 				return AnalysisResult{}, fmt.Errorf("no text content in Anthropic response (stop reason: %s)", message.StopReason)
 			}
 
-			c.logUsage(apiCalls, totalInputTokens, totalOutputTokens, totalCachedTokens)
+			c.logUsage(usage)
 			return AnalysisResult{Text: text, ResponseID: message.ID}, nil
 		}
 
@@ -151,7 +166,7 @@ func (c *AnthropicDeepAnalysisClient) Analyze(ctx context.Context, document stri
 		if err != nil {
 			return AnalysisResult{}, fmt.Errorf("anthropic API error: %w", err)
 		}
-		addAnthropicUsage(message, &totalInputTokens, &totalOutputTokens, &totalCachedTokens, &apiCalls)
+		addAnthropicUsage(message, &usage)
 	}
 
 	return AnalysisResult{}, fmt.Errorf("max function call iterations (%d) reached", maxIterations)
@@ -194,17 +209,27 @@ func requiresExplicitAnthropicAdaptiveThinking(model string) bool {
 		strings.HasPrefix(model, "claude-sonnet-4-6")
 }
 
-func (c *AnthropicDeepAnalysisClient) logUsage(apiCalls int, inputTokens, outputTokens, cachedTokens int64) {
+func (c *AnthropicDeepAnalysisClient) logUsage(usage anthropicUsageTotals) {
 	scoutUsage := c.runtime.scout.Usage()
-	researcherCost := estimateCost(c.researcherModel, inputTokens, cachedTokens, outputTokens)
+	researcherCost := estimateAnthropicCost(c.researcherModel, usage)
 	scoutCost := estimateCost(c.scoutModel, scoutUsage.InputTokens, 0, scoutUsage.OutputTokens)
+	cacheHitRate := 0.0
+	if totalInputTokens := usage.totalInputTokens(); totalInputTokens > 0 {
+		cacheHitRate = float64(usage.cacheReadInputTokens) / float64(totalInputTokens) * 100
+	}
 
 	log.Info("Researcher usage",
 		"model", c.researcherModel,
-		"api_calls", apiCalls,
-		"input_tokens", inputTokens,
-		"output_tokens", outputTokens,
-		"cached_tokens", cachedTokens,
+		"api_calls", usage.apiCalls,
+		"input_tokens", usage.totalInputTokens(),
+		"uncached_input_tokens", usage.inputTokens,
+		"cache_creation_input_tokens", usage.cacheCreationInputTokens(),
+		"cache_creation_5m_input_tokens", usage.cacheCreation5mInputTokens,
+		"cache_creation_1h_input_tokens", usage.cacheCreation1hInputTokens,
+		"cached_tokens", usage.cacheReadInputTokens,
+		"cache_read_input_tokens", usage.cacheReadInputTokens,
+		"cache_hit_rate", fmt.Sprintf("%.1f%%", cacheHitRate),
+		"output_tokens", usage.outputTokens,
 		"cost_usd", fmt.Sprintf("$%.4f", researcherCost))
 	log.Info("Scout usage",
 		"model", c.scoutModel,
@@ -215,11 +240,25 @@ func (c *AnthropicDeepAnalysisClient) logUsage(apiCalls int, inputTokens, output
 	log.Info("Total cost", "usd", fmt.Sprintf("$%.4f", researcherCost+scoutCost))
 }
 
-func addAnthropicUsage(message *anthropic.Message, inputTokens, outputTokens, cachedTokens *int64, apiCalls *int) {
-	*inputTokens += message.Usage.InputTokens + message.Usage.CacheCreationInputTokens + message.Usage.CacheReadInputTokens
-	*outputTokens += message.Usage.OutputTokens
-	*cachedTokens += message.Usage.CacheReadInputTokens
-	*apiCalls++
+func addAnthropicUsage(message *anthropic.Message, totals *anthropicUsageTotals) {
+	totals.inputTokens += message.Usage.InputTokens
+	totals.cacheCreation5mInputTokens += message.Usage.CacheCreation.Ephemeral5mInputTokens
+	totals.cacheCreation1hInputTokens += message.Usage.CacheCreation.Ephemeral1hInputTokens
+	totals.cacheReadInputTokens += message.Usage.CacheReadInputTokens
+	totals.outputTokens += message.Usage.OutputTokens
+	totals.apiCalls++
+}
+
+func estimateAnthropicCost(model string, usage anthropicUsageTotals) float64 {
+	inputCostPer1M, _, outputCostPer1M := pricingForModel(model)
+
+	inputCost := float64(usage.inputTokens) / 1_000_000.0 * inputCostPer1M
+	cacheCreation5mCost := float64(usage.cacheCreation5mInputTokens) / 1_000_000.0 * inputCostPer1M * 1.25
+	cacheCreation1hCost := float64(usage.cacheCreation1hInputTokens) / 1_000_000.0 * inputCostPer1M * 2.0
+	cacheReadCost := float64(usage.cacheReadInputTokens) / 1_000_000.0 * inputCostPer1M * 0.1
+	outputCost := float64(usage.outputTokens) / 1_000_000.0 * outputCostPer1M
+
+	return inputCost + cacheCreation5mCost + cacheCreation1hCost + cacheReadCost + outputCost
 }
 
 func extractAnthropicToolCalls(message *anthropic.Message) []ToolCall {

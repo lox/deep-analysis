@@ -91,6 +91,7 @@ Get full file contents for detailed analysis.
 ### Phase 3: Polish
 - Caching of scout results per session
 - Streaming for long operations
+- Automatic five-minute prompt caching and cache-aware cost reporting for Anthropic researcher runs (completed)
 - Provider-qualified researcher/scout flags and global role defaults (completed)
 
 ## Decisions
