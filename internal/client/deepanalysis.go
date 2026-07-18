@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	// renovate: depName=openai/gpt-latest-pro
-	DefaultResearcherModel = "gpt-5.5-pro"
+	// renovate: depName=openai/gpt-latest-sol
+	DefaultResearcherModel = "gpt-5.6-sol"
 	AnthropicProvider      = "anthropic"
 	OpenAIProvider         = "openai"
 	maxIterations          = 50
+	promptCacheVersion     = "v4"
 )
 
 // Analyzer runs the researcher/scout analysis workflow.
@@ -136,29 +137,14 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 	var totalInputTokens int64
 	var totalOutputTokens int64
 	var totalCachedTokens int64
+	var totalCacheWriteTokens int64
+	var totalResearcherCost float64
 	var apiCalls int
-
-	cacheKey := "deep-analysis-v3"
-
-	params := responses.ResponseNewParams{
-		Model:          c.researcherModel,
-		Instructions:   openai.Opt(c.buildSystemPrompt()),
-		Tools:          c.tools,
-		PromptCacheKey: openai.Opt(cacheKey),
-	}
-	if opts.ReasoningEffort != "" {
-		params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
-	}
 
 	inputItems := responses.ResponseInputParam{
 		responses.ResponseInputItemParamOfMessage(document, responses.EasyInputMessageRoleUser),
 	}
-	params.Input = responses.ResponseNewParamsInputUnion{
-		OfInputItemList: inputItems,
-	}
-	if opts.PreviousResponseID != "" {
-		params.PreviousResponseID = openai.Opt(opts.PreviousResponseID)
-	}
+	params := c.newResponseParams(inputItems, opts.PreviousResponseID, opts)
 
 	log.Debug("Calling OpenAI Responses API", "model", c.researcherModel, "previous_response_id", opts.PreviousResponseID)
 	response, err := c.client.Responses.New(ctx, params)
@@ -171,11 +157,15 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 	totalInputTokens += response.Usage.InputTokens
 	totalOutputTokens += response.Usage.OutputTokens
 	totalCachedTokens += response.Usage.InputTokensDetails.CachedTokens
+	responseCacheWriteTokens := cacheWriteTokens(response.Usage)
+	totalCacheWriteTokens += responseCacheWriteTokens
+	totalResearcherCost += estimateResponseCost(c.researcherModel, response.Usage)
 
 	log.Debug("Received response", "id", response.ID, "status", response.Status,
 		"input_tokens", response.Usage.InputTokens,
 		"output_tokens", response.Usage.OutputTokens,
-		"cached_tokens", response.Usage.InputTokensDetails.CachedTokens)
+		"cached_tokens", response.Usage.InputTokensDetails.CachedTokens,
+		"cache_write_tokens", responseCacheWriteTokens)
 
 	// Handle tool calls in a loop
 	for i := 0; i < maxIterations; i++ {
@@ -194,9 +184,13 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 			scoutUsage := c.scout.Usage()
 
 			// Calculate costs
-			researcherCost := estimateCost(c.researcherModel, totalInputTokens, totalCachedTokens, totalOutputTokens)
-			scoutCost := estimateCost(c.scoutModel, scoutUsage.InputTokens, 0, scoutUsage.OutputTokens)
+			researcherCost := totalResearcherCost
+			scoutCost := estimateCost(c.scoutModel, scoutUsage.InputTokens, 0, 0, scoutUsage.OutputTokens)
 			totalCost := researcherCost + scoutCost
+			uncachedInputTokens := totalInputTokens - totalCachedTokens - totalCacheWriteTokens
+			if uncachedInputTokens < 0 {
+				uncachedInputTokens = 0
+			}
 
 			cacheHitRate := 0.0
 			if totalInputTokens > 0 {
@@ -207,8 +201,10 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 				"model", c.researcherModel,
 				"api_calls", apiCalls,
 				"input_tokens", totalInputTokens,
+				"uncached_input_tokens", uncachedInputTokens,
 				"output_tokens", totalOutputTokens,
 				"cached_tokens", totalCachedTokens,
+				"cache_write_tokens", totalCacheWriteTokens,
 				"cache_hit_rate", fmt.Sprintf("%.1f%%", cacheHitRate),
 				"cost_usd", fmt.Sprintf("$%.4f", researcherCost))
 
@@ -243,17 +239,7 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 		}
 
 		log.Debug("Continuing with tool outputs", "count", len(toolOutputs))
-		params := responses.ResponseNewParams{
-			Model:              c.researcherModel,
-			PreviousResponseID: openai.Opt(response.ID),
-			Input: responses.ResponseNewParamsInputUnion{
-				OfInputItemList: toolOutputs,
-			},
-			Tools: c.tools,
-		}
-		if opts.ReasoningEffort != "" {
-			params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
-		}
+		params := c.newResponseParams(toolOutputs, response.ID, opts)
 
 		response, err = c.client.Responses.New(ctx, params)
 		if err != nil {
@@ -265,15 +251,43 @@ func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts 
 		totalInputTokens += response.Usage.InputTokens
 		totalOutputTokens += response.Usage.OutputTokens
 		totalCachedTokens += response.Usage.InputTokensDetails.CachedTokens
+		responseCacheWriteTokens = cacheWriteTokens(response.Usage)
+		totalCacheWriteTokens += responseCacheWriteTokens
+		totalResearcherCost += estimateResponseCost(c.researcherModel, response.Usage)
 
 		log.Debug("Received follow-up response", "id", response.ID, "status", response.Status,
 			"input_tokens", response.Usage.InputTokens,
 			"output_tokens", response.Usage.OutputTokens,
-			"cached_tokens", response.Usage.InputTokensDetails.CachedTokens)
+			"cached_tokens", response.Usage.InputTokensDetails.CachedTokens,
+			"cache_write_tokens", responseCacheWriteTokens)
 	}
 
 	log.Error("Max iterations reached", "max", maxIterations)
 	return AnalysisResult{}, fmt.Errorf("max function call iterations (%d) reached", maxIterations)
+}
+
+func (c *DeepAnalysisClient) newResponseParams(input responses.ResponseInputParam, previousResponseID string, opts AnalysisOptions) responses.ResponseNewParams {
+	params := responses.ResponseNewParams{
+		Model:          c.researcherModel,
+		Instructions:   openai.Opt(c.buildSystemPrompt()),
+		Tools:          c.tools,
+		PromptCacheKey: openai.Opt(fmt.Sprintf("deep-analysis:researcher:%s:%s", strings.ToLower(c.researcherModel), promptCacheVersion)),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfInputItemList: input,
+		},
+	}
+
+	if opts.ReasoningEffort != "" {
+		params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
+	}
+	if isGPT56Model(c.researcherModel) {
+		params.Reasoning.SetExtraFields(map[string]any{"mode": "pro"})
+	}
+	if previousResponseID != "" {
+		params.PreviousResponseID = openai.Opt(previousResponseID)
+	}
+
+	return params
 }
 
 // buildTools defines the three high-level tools for the researcher
@@ -630,7 +644,11 @@ You are being consulted because standard approaches have proven insufficient. Br
 }
 
 // estimateCost estimates the cost in USD based on model and token usage.
-// Pricing checked Jun 2026:
+// Pricing checked Jul 2026:
+// - gpt-5.6-sol: $5/1M input, $0.50/1M cached input, $6.25/1M cache write, $30/1M output
+// - gpt-5.6-terra: $2.50/1M input, $0.25/1M cached input, $3.125/1M cache write, $15/1M output
+// - gpt-5.6-luna: $1/1M input, $0.10/1M cached input, $1.25/1M cache write, $6/1M output
+// GPT-5.6 requests above 272K input tokens cost 2x input and 1.5x output for the full request.
 // - gpt-5.5-pro: $30/1M input, $180/1M output
 // - gpt-5.5: $5/1M input, $0.50/1M cached input, $30/1M output
 // - gpt-5.4-pro: $30/1M input, $180/1M output
@@ -640,7 +658,7 @@ You are being consulted because standard approaches have proven insufficient. Br
 // - gpt-5 / gpt-5.1: $1.25/1M input, $0.125/1M cached input, $10/1M output
 // - gpt-5-mini: $0.25/1M input, $0.025/1M cached input, $2/1M output
 // - gpt-5-nano: $0.05/1M input, $0.005/1M cached input, $0.4/1M output
-func estimateCost(model string, inputTokens, cachedInputTokens, outputTokens int64) float64 {
+func estimateCost(model string, inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens int64) float64 {
 	inputCostPer1M, cachedInputCostPer1M, outputCostPer1M := pricingForModel(model)
 	if cachedInputTokens < 0 {
 		cachedInputTokens = 0
@@ -648,13 +666,40 @@ func estimateCost(model string, inputTokens, cachedInputTokens, outputTokens int
 	if cachedInputTokens > inputTokens {
 		cachedInputTokens = inputTokens
 	}
+	if cacheWriteInputTokens < 0 {
+		cacheWriteInputTokens = 0
+	}
+	if cacheWriteInputTokens > inputTokens-cachedInputTokens {
+		cacheWriteInputTokens = inputTokens - cachedInputTokens
+	}
 
-	uncachedInputTokens := inputTokens - cachedInputTokens
+	uncachedInputTokens := inputTokens - cachedInputTokens - cacheWriteInputTokens
+	cacheWriteCostPer1M := inputCostPer1M
+	if isGPT56Model(model) {
+		cacheWriteCostPer1M *= 1.25
+		if inputTokens > 272_000 {
+			inputCostPer1M *= 2
+			cachedInputCostPer1M *= 2
+			cacheWriteCostPer1M *= 2
+			outputCostPer1M *= 1.5
+		}
+	}
 	inputCost := (float64(uncachedInputTokens) / 1_000_000.0) * inputCostPer1M
 	cachedInputCost := (float64(cachedInputTokens) / 1_000_000.0) * cachedInputCostPer1M
+	cacheWriteInputCost := (float64(cacheWriteInputTokens) / 1_000_000.0) * cacheWriteCostPer1M
 	outputCost := (float64(outputTokens) / 1_000_000.0) * outputCostPer1M
 
-	return inputCost + cachedInputCost + outputCost
+	return inputCost + cachedInputCost + cacheWriteInputCost + outputCost
+}
+
+func estimateResponseCost(model string, usage responses.ResponseUsage) float64 {
+	return estimateCost(
+		model,
+		usage.InputTokens,
+		usage.InputTokensDetails.CachedTokens,
+		cacheWriteTokens(usage),
+		usage.OutputTokens,
+	)
 }
 
 func pricingForModel(model string) (inputCostPer1M, cachedInputCostPer1M, outputCostPer1M float64) {
@@ -671,6 +716,12 @@ func pricingForModel(model string) (inputCostPer1M, cachedInputCostPer1M, output
 		return 3.0, 0.3, 15.0
 	case matchesModelOrSnapshot(normalized, "claude-haiku-4-5"):
 		return 1.0, 0.1, 5.0
+	case matchesModelOrSnapshot(normalized, "gpt-5.6-sol"), matchesModelOrSnapshot(normalized, "gpt-5.6"):
+		return 5.0, 0.5, 30.0
+	case matchesModelOrSnapshot(normalized, "gpt-5.6-terra"):
+		return 2.5, 0.25, 15.0
+	case matchesModelOrSnapshot(normalized, "gpt-5.6-luna"):
+		return 1.0, 0.1, 6.0
 	case matchesModelOrSnapshot(normalized, "gpt-5.5-pro"):
 		return 30.0, 30.0, 180.0
 	case matchesModelOrSnapshot(normalized, "gpt-5.5"):
@@ -701,6 +752,21 @@ func pricingForModel(model string) (inputCostPer1M, cachedInputCostPer1M, output
 
 func matchesModelOrSnapshot(model, base string) bool {
 	return model == base || strings.HasPrefix(model, base+"-20")
+}
+
+func isGPT56Model(model string) bool {
+	normalized := strings.ToLower(model)
+	return normalized == "gpt-5.6" || strings.HasPrefix(normalized, "gpt-5.6-")
+}
+
+func cacheWriteTokens(usage responses.ResponseUsage) int64 {
+	var details struct {
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
+	}
+	if err := json.Unmarshal([]byte(usage.InputTokensDetails.RawJSON()), &details); err != nil || details.CacheWriteTokens < 0 {
+		return 0
+	}
+	return details.CacheWriteTokens
 }
 
 // buildReasoningParam creates a ReasoningParam from a string effort level.

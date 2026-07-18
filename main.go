@@ -37,7 +37,7 @@ type AnalyzeCmd struct {
 	Debug           bool   `help:"Enable debug logging"`
 	Continue        string `help:"Session id to continue a previous conversation" name:"continue"`
 	Reset           bool   `help:"Ignore stored session state and start a fresh conversation"`
-	Researcher      string `help:"Researcher as provider.model@effort (overrides global config; default: openai.gpt-5.5-pro@xhigh)"`
+	Researcher      string `help:"Researcher as provider.model@effort (overrides global config; default: openai.gpt-5.6-sol@xhigh in Pro mode)"`
 	Scout           string `help:"Scout as provider.model@effort (overrides global config; default: openai.gpt-5.5@low)"`
 	ReasoningEffort string `help:"Deprecated researcher effort override: low, medium, high, xhigh"`
 	Cwd             string `help:"Working directory for file operations (default: current directory)"`

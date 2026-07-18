@@ -19,17 +19,16 @@
     },
     {
       "customType": "regex",
-      "description": "Update default OpenAI GPT Pro model strings.",
+      "description": "Update the default OpenAI GPT Sol researcher model.",
       "managerFilePatterns": [
-        "/(^|/)main\\.go$/",
         "/(^|/)internal/client/deepanalysis\\.go$/"
       ],
       "matchStrings": [
-        "renovate: depName=openai/gpt-latest-pro[^\\n]*\\n[^\\n]*\"(?<currentValue>gpt-[0-9]+(?:\\.[0-9]+)?-pro)\""
+        "renovate: depName=openai/gpt-latest-sol[^\\n]*\\n[^\\n]*\"(?<currentValue>gpt-[0-9]+(?:\\.[0-9]+)?-sol)\""
       ],
-      "depNameTemplate": "openai/gpt-latest-pro",
-      "datasourceTemplate": "custom.openai-latest-gpt-pro",
-      "versioningTemplate": "regex:^gpt-(?<major>\\d+)(?:\\.(?<minor>\\d+))?(?<compatibility>-pro)$"
+      "depNameTemplate": "openai/gpt-latest-sol",
+      "datasourceTemplate": "custom.openai-latest-gpt",
+      "versioningTemplate": "regex:^gpt-(?<major>\\d+)(?:\\.(?<minor>\\d+))?(?<compatibility>-sol)$"
     }
   ],
   "customDatasources": {
@@ -39,18 +38,11 @@
       "transformTemplates": [
         "{\"releases\":[{\"version\": $trim($replace(releases.version[$match($, /^\\s*model:\\s*gpt-/)][0], /^\\s*model:\\s*/, \"\"))}],\"homepage\":\"https://developers.openai.com/api/docs/guides/latest-model\"}"
       ]
-    },
-    "openai-latest-gpt-pro": {
-      "defaultRegistryUrlTemplate": "https://developers.openai.com/api/docs/guides/reasoning.md",
-      "format": "plain",
-      "transformTemplates": [
-        "{\"releases\":[{\"version\": $substringBefore($substringAfter(releases.version[$contains($, \"highest-intelligence\")][0], \"use [`\"), \"`]\")}],\"homepage\":\"https://developers.openai.com/api/docs/guides/reasoning\"}"
-      ]
     }
   },
   "packageRules": [
     {
-      "matchPackageNames": ["openai/gpt-latest", "openai/gpt-latest-pro"],
+      "matchPackageNames": ["openai/gpt-latest", "openai/gpt-latest-sol"],
       "groupName": "OpenAI model defaults"
     }
   ]
