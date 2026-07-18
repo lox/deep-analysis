@@ -204,6 +204,8 @@ INFO Scout usage      model=<scout-model>      api_calls=8 input_tokens=45000 ou
 INFO Total cost                         usd=$1.1490
 ```
 
+Anthropic researcher runs automatically cache the growing tool-use conversation for five minutes. Their usage line also reports fresh input, cache creation, cache reads, and the resulting cache hit rate so the cost estimate includes Anthropic's cache-write premiums.
+
 ## Development
 
 ```bash
