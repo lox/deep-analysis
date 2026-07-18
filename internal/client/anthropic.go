@@ -212,7 +212,7 @@ func requiresExplicitAnthropicAdaptiveThinking(model string) bool {
 func (c *AnthropicDeepAnalysisClient) logUsage(usage anthropicUsageTotals) {
 	scoutUsage := c.runtime.scout.Usage()
 	researcherCost := estimateAnthropicCost(c.researcherModel, usage)
-	scoutCost := estimateCost(c.scoutModel, scoutUsage.InputTokens, 0, scoutUsage.OutputTokens)
+	scoutCost := estimateCost(c.scoutModel, scoutUsage.InputTokens, 0, 0, scoutUsage.OutputTokens)
 	cacheHitRate := 0.0
 	if totalInputTokens := usage.totalInputTokens(); totalInputTokens > 0 {
 		cacheHitRate = float64(usage.cacheReadInputTokens) / float64(totalInputTokens) * 100

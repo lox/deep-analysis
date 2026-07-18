@@ -108,11 +108,11 @@ Check the installed binary, effective models, and credential sources:
 
 # Or GPT researcher with an Anthropic scout
 ./dist/deep-analysis task.md \
-  --researcher openai.gpt-5.5-pro@xhigh \
+  --researcher openai.gpt-5.6-sol@xhigh \
   --scout anthropic.claude-sonnet-5@low
 ```
 
-Selections use `provider.model[@effort]`. The provider is split at the first dot and optional effort at the final `@`; accepted efforts are `low`, `medium`, `high`, and `xhigh`. Omit the suffix to use the provider's model default. `@` needs no escaping in common shells or YAML.
+Selections use `provider.model[@effort]`. The provider is split at the first dot and optional effort at the final `@`; accepted efforts are `low`, `medium`, `high`, and `xhigh`. Omit the suffix to use the provider's model default. OpenAI GPT-5.6 researchers use Pro mode while older OpenAI overrides retain their existing request behavior. `@` needs no escaping in common shells or YAML.
 
 ### Follow-up Questions
 
@@ -141,7 +141,7 @@ The AI will see your previous analysis and focus on new questions.
 | `--continue` | Session ID to continue a previous conversation |
 | `--reset` | Start fresh, ignoring stored session state |
 | `--cwd` | Working directory for file operations |
-| `--researcher` | Researcher as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.5-pro@xhigh`) |
+| `--researcher` | Researcher as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.6-sol@xhigh` in Pro mode) |
 | `--scout` | Scout as `provider.model[@effort]` (overrides global config; compiled default: `openai.gpt-5.5@low`) |
 | `--reasoning-effort` | Deprecated researcher effort override; cannot accompany `@effort` in `--researcher` |
 | `--debug` | Enable debug logging |
@@ -199,10 +199,12 @@ The researcher follows: **find → summarize → read**
 Each run reports usage for both models:
 
 ```
-INFO Researcher usage model=<researcher-model> api_calls=5 input_tokens=12000 output_tokens=3000 cost_usd=$0.9000
-INFO Scout usage      model=<scout-model>      api_calls=8 input_tokens=45000 output_tokens=800  cost_usd=$0.2490
-INFO Total cost                         usd=$1.1490
+INFO Researcher usage model=gpt-5.6-sol api_calls=5 input_tokens=12000 uncached_input_tokens=4000 output_tokens=3000 cached_tokens=7000 cache_write_tokens=1000 cache_hit_rate=58.3% cost_usd=$0.1198
+INFO Scout usage      model=gpt-5.5     api_calls=8 input_tokens=45000 output_tokens=800 cost_usd=$0.2490
+INFO Total cost               usd=$0.3688
 ```
+
+OpenAI GPT-5.6 researcher requests keep the same instructions, tools, reasoning settings, and model-scoped cache key through the tool loop. Their usage line separates uncached input, cache writes, and cache reads so the hit rate and GPT-5.6 cache-write premium are visible in the cost estimate.
 
 Anthropic researcher runs automatically cache the growing tool-use conversation for five minutes. Their usage line also reports fresh input, cache creation, cache reads, and the resulting cache hit rate so the cost estimate includes Anthropic's cache-write premiums.
 

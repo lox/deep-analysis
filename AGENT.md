@@ -50,7 +50,7 @@ deep-analysis --cwd /path/to/project task.md
 deep-analysis task.md --continue <session-id>
 
 # Use lower researcher effort for faster responses
-deep-analysis task.md --researcher openai.gpt-5.5-pro@high
+deep-analysis task.md --researcher openai.gpt-5.6-sol@high
 
 # Check install/config state
 deep-analysis doctor
