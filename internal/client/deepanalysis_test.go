@@ -1,13 +1,20 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
+	harness "github.com/lox/agent-harness"
+	harnessopenai "github.com/lox/agent-harness/provider/openai"
 	"github.com/lox/deep-analysis/internal/agent"
-	"github.com/openai/openai-go/responses"
 )
 
 func TestEstimateCostSupportsCurrentAndLegacyModels(t *testing.T) {
@@ -167,95 +174,26 @@ func TestEstimateCostAppliesGPT56LongContextPricingPerResponse(t *testing.T) {
 		t.Fatalf("long GPT-5.6 request cost = %v, want %v", longRequestCost, wantLongRequest)
 	}
 
-	var first, second responses.ResponseUsage
-	for _, usage := range []*responses.ResponseUsage{&first, &second} {
-		usage.InputTokens = 200_000
-		usage.OutputTokens = 100_000
-	}
-	gotSeparateRequests := estimateResponseCost("gpt-5.6-sol", first) + estimateResponseCost("gpt-5.6-sol", second)
+	gotSeparateRequests := estimateHarnessRunCost("gpt-5.6-sol", []harness.Usage{
+		{InputTokens: 200_000, OutputTokens: 100_000},
+		{InputTokens: 200_000, OutputTokens: 100_000},
+	})
 	const wantSeparateRequests = 8.0 // Each request stays below the 272K threshold.
 	if math.Abs(gotSeparateRequests-wantSeparateRequests) > 1e-9 {
 		t.Fatalf("separate GPT-5.6 request cost = %v, want %v", gotSeparateRequests, wantSeparateRequests)
 	}
 }
 
-func TestCacheWriteTokensReadsNewUsageField(t *testing.T) {
-	var usage responses.ResponseUsage
-	err := json.Unmarshal([]byte(`{
-		"input_tokens": 1234,
-		"input_tokens_details": {"cached_tokens": 500, "cache_write_tokens": 321},
-		"output_tokens": 100,
-		"output_tokens_details": {"reasoning_tokens": 50},
-		"total_tokens": 1334
-	}`), &usage)
-	if err != nil {
-		t.Fatalf("unmarshal usage: %v", err)
+func TestEstimateHarnessCallCostIncludesCacheCategories(t *testing.T) {
+	got := estimateHarnessCallCost("gpt-5.6-sol", harness.Usage{
+		InputTokens:              120_000,
+		CacheCreationInputTokens: 80_000,
+		OutputTokens:             100_000,
+	})
+	const want = 4.1
+	if math.Abs(got-want) > 1e-9 {
+		t.Fatalf("harness call cost = %v, want %v", got, want)
 	}
-	if got := cacheWriteTokens(usage); got != 321 {
-		t.Fatalf("cacheWriteTokens = %d, want 321", got)
-	}
-}
-
-func TestGPT56ResearcherRequestsUseProModeAndStablePrefix(t *testing.T) {
-	c := New("test-key", nil, "gpt-5.6-sol", "gpt-5.5")
-	input := responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage("analyze this", responses.EasyInputMessageRoleUser),
-	}
-
-	initial := decodeResearcherRequest(t, c.newResponseParams(input, "", AnalysisOptions{ReasoningEffort: "xhigh"}))
-	followUp := decodeResearcherRequest(t, c.newResponseParams(input, "resp_123", AnalysisOptions{ReasoningEffort: "xhigh"}))
-
-	if initial.Model != "gpt-5.6-sol" || initial.Reasoning.Mode != "pro" || initial.Reasoning.Effort != "xhigh" {
-		t.Fatalf("initial model/reasoning = %q/%q/%q", initial.Model, initial.Reasoning.Mode, initial.Reasoning.Effort)
-	}
-	if initial.Instructions == "" || initial.PromptCacheKey != "deep-analysis:researcher:gpt-5.6-sol:v4" || len(initial.Tools) != 3 {
-		t.Fatalf("initial stable prefix is incomplete: instructions=%t cache_key=%q tools=%d", initial.Instructions != "", initial.PromptCacheKey, len(initial.Tools))
-	}
-	if followUp.PreviousResponseID != "resp_123" {
-		t.Fatalf("follow-up previous_response_id = %q, want resp_123", followUp.PreviousResponseID)
-	}
-	if followUp.Instructions != initial.Instructions || followUp.PromptCacheKey != initial.PromptCacheKey ||
-		followUp.Reasoning != initial.Reasoning || !reflect.DeepEqual(followUp.Tools, initial.Tools) {
-		t.Fatal("follow-up request did not preserve the cacheable researcher prefix")
-	}
-}
-
-func TestLegacyResearcherDoesNotReceiveGPT56ProMode(t *testing.T) {
-	c := New("test-key", nil, "gpt-5.5", "gpt-5.5")
-	input := responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage("analyze this", responses.EasyInputMessageRoleUser),
-	}
-
-	request := decodeResearcherRequest(t, c.newResponseParams(input, "", AnalysisOptions{ReasoningEffort: "high"}))
-	if request.Reasoning.Mode != "" {
-		t.Fatalf("legacy reasoning mode = %q, want empty", request.Reasoning.Mode)
-	}
-}
-
-type researcherRequestShape struct {
-	Model              string            `json:"model"`
-	Instructions       string            `json:"instructions"`
-	PromptCacheKey     string            `json:"prompt_cache_key"`
-	PreviousResponseID string            `json:"previous_response_id"`
-	Tools              []json.RawMessage `json:"tools"`
-	Reasoning          struct {
-		Effort string `json:"effort"`
-		Mode   string `json:"mode"`
-	} `json:"reasoning"`
-}
-
-func decodeResearcherRequest(t *testing.T, params responses.ResponseNewParams) researcherRequestShape {
-	t.Helper()
-
-	data, err := json.Marshal(params)
-	if err != nil {
-		t.Fatalf("marshal response params: %v", err)
-	}
-	var request researcherRequestShape
-	if err := json.Unmarshal(data, &request); err != nil {
-		t.Fatalf("unmarshal response params: %v", err)
-	}
-	return request
 }
 
 func TestNewUsesConfiguredResearcherAndScoutModels(t *testing.T) {
@@ -324,26 +262,308 @@ func TestNewForProvidersMixesResearcherAndScout(t *testing.T) {
 	}
 }
 
-func TestAnthropicToolsMatchResearcherWorkflow(t *testing.T) {
-	tools := buildAnthropicTools()
-	if len(tools) != 3 {
-		t.Fatalf("len(tools) = %d, want 3", len(tools))
-	}
-	wantNames := []string{"find_files", "summarize_files", "read_files"}
-	for i, want := range wantNames {
-		if tools[i].OfTool == nil || tools[i].OfTool.Name != want {
-			t.Fatalf("tool %d = %+v, want %s", i, tools[i], want)
+func TestProviderToolsMatchResearcherWorkflow(t *testing.T) {
+	openAITools := New("test-key", nil, "", "").tools
+	anthropicTools := NewAnthropic("test-key", nil, "", "").runtime.tools
+	for _, tc := range []struct {
+		provider    string
+		tools       []harness.Tool
+		definitions []researcherToolDefinition
+	}{
+		{OpenAIProvider, openAITools, researcherToolDefinitions(OpenAIProvider)},
+		{AnthropicProvider, anthropicTools, researcherToolDefinitions(AnthropicProvider)},
+	} {
+		if len(tc.definitions) != 3 || len(tc.tools) != len(tc.definitions) {
+			t.Fatalf("%s tool counts = definitions:%d runtime:%d, want 3 each", tc.provider, len(tc.definitions), len(tc.tools))
+		}
+		for i, definition := range tc.definitions {
+			tool := tc.tools[i].ToolDef
+			if tool.Name != definition.name || tool.Description != definition.description {
+				t.Fatalf("%s tool %d = %q (%q), want %q (%q)", tc.provider, i, tool.Name, tool.Description, definition.name, definition.description)
+			}
+			var parameters map[string]any
+			if err := json.Unmarshal(tool.Parameters, &parameters); err != nil {
+				t.Fatalf("decode %s tool %d parameters: %v", tc.provider, i, err)
+			}
+			expectedJSON, err := json.Marshal(definition.parameters())
+			if err != nil {
+				t.Fatalf("encode %s tool %d definition: %v", tc.provider, i, err)
+			}
+			var expectedParameters map[string]any
+			if err := json.Unmarshal(expectedJSON, &expectedParameters); err != nil {
+				t.Fatalf("decode %s tool %d definition: %v", tc.provider, i, err)
+			}
+			if !reflect.DeepEqual(parameters, expectedParameters) {
+				t.Fatalf("%s tool %d properties differ from definition", tc.provider, i)
+			}
 		}
 	}
 }
 
-func TestAnthropicAdaptiveThinkingModels(t *testing.T) {
-	for _, model := range []string{"claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6"} {
-		if !requiresExplicitAnthropicAdaptiveThinking(model) {
-			t.Fatalf("%s should use adaptive thinking", model)
+func TestOpenAIAnalyzePreservesContinuationAndToolErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		previousResponseID string
+	}{
+		{name: "continue", previousResponseID: "resp_previous"},
+		{name: "reset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var requests []map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode request: %v", err)
+					return
+				}
+				mu.Lock()
+				requests = append(requests, request)
+				requestNumber := len(requests)
+				mu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+				if requestNumber == 1 {
+					fmt.Fprint(w, openAIResponseJSON("resp_1", `{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_files","arguments":"{\"paths\":42}","status":"completed"}`))
+					return
+				}
+				fmt.Fprint(w, openAIResponseJSON("resp_2", `{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Final analysis","annotations":[]}]}`))
+			}))
+			defer server.Close()
+
+			result, err := newTestOpenAIAnalysisClient(server.URL).Analyze(context.Background(), "Analyze", AnalysisOptions{
+				PreviousResponseID: tc.previousResponseID,
+				ReasoningEffort:    "xhigh",
+			})
+			if err != nil {
+				t.Fatalf("Analyze: %v", err)
+			}
+			if result != (AnalysisResult{Text: "Final analysis", ResponseID: "resp_2"}) {
+				t.Fatalf("result = %+v", result)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(requests) != 2 {
+				t.Fatalf("requests = %d, want 2", len(requests))
+			}
+			previous, hasPrevious := requests[0]["previous_response_id"]
+			if tc.previousResponseID == "" && hasPrevious {
+				t.Fatalf("reset request carried previous_response_id = %#v", previous)
+			}
+			if tc.previousResponseID != "" && previous != tc.previousResponseID {
+				t.Fatalf("previous_response_id = %#v, want %q", previous, tc.previousResponseID)
+			}
+			if requests[0]["prompt_cache_key"] != "deep-analysis:researcher:gpt-5.6-sol:v4" {
+				t.Fatalf("prompt_cache_key = %#v", requests[0]["prompt_cache_key"])
+			}
+			for i, tool := range requests[0]["tools"].([]any) {
+				if tool.(map[string]any)["strict"] != true {
+					t.Fatalf("tool %d strict = %#v, want true", i, tool.(map[string]any)["strict"])
+				}
+			}
+			reasoning := requests[0]["reasoning"].(map[string]any)
+			if reasoning["effort"] != "xhigh" || reasoning["mode"] != "pro" {
+				t.Fatalf("reasoning = %#v", reasoning)
+			}
+			if requests[1]["previous_response_id"] != "resp_1" {
+				t.Fatalf("tool continuation response id = %#v", requests[1]["previous_response_id"])
+			}
+			if requests[1]["prompt_cache_key"] != requests[0]["prompt_cache_key"] ||
+				requests[1]["instructions"] != requests[0]["instructions"] ||
+				!reflect.DeepEqual(requests[1]["reasoning"], requests[0]["reasoning"]) ||
+				!reflect.DeepEqual(requests[1]["tools"], requests[0]["tools"]) {
+				t.Fatal("follow-up request did not preserve the cacheable researcher prefix")
+			}
+			input := requests[1]["input"].([]any)
+			output := input[0].(map[string]any)
+			if output["type"] != "function_call_output" || output["call_id"] != "call_1" || !strings.Contains(output["output"].(string), "Error: invalid arguments:") {
+				t.Fatalf("tool error output = %#v", output)
+			}
+		})
+	}
+}
+
+func TestOpenAIAnalyzeStopsAtMaxIterations(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		requests++
+		requestNumber := requests
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, openAIResponseJSON(
+			fmt.Sprintf("resp_%d", requestNumber),
+			fmt.Sprintf(`{"id":"fc_%d","type":"function_call","call_id":"call_%d","name":"read_files","arguments":"{\"paths\":42}","status":"completed"}`, requestNumber, requestNumber),
+		))
+	}))
+	defer server.Close()
+
+	analysisClient := newTestOpenAIAnalysisClient(server.URL)
+	toolExecutions := 0
+	for i := range analysisClient.tools {
+		execute := analysisClient.tools[i].Execute
+		analysisClient.tools[i].Execute = func(ctx context.Context, call harness.ToolCall) (*harness.ToolResult, error) {
+			toolExecutions++
+			return execute(ctx, call)
 		}
 	}
-	if requiresExplicitAnthropicAdaptiveThinking("claude-fable-5") {
-		t.Fatal("Fable adaptive thinking is always on and should not send a thinking override")
+	_, err := analysisClient.Analyze(context.Background(), "Analyze", AnalysisOptions{})
+	if err == nil || err.Error() != fmt.Sprintf("max function call iterations (%d) reached", maxIterations) {
+		t.Fatalf("Analyze error = %v", err)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != maxIterations+1 {
+		t.Fatalf("requests = %d, want %d", requests, maxIterations+1)
+	}
+	if toolExecutions != maxIterations {
+		t.Fatalf("tool executions = %d, want %d", toolExecutions, maxIterations)
+	}
+}
+
+func TestOpenAIAnalyzeCompletesOnLastStepAndPreservesTextBlocks(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if requests <= maxIterations {
+			fmt.Fprint(w, openAIResponseJSON(
+				fmt.Sprintf("resp_%d", requests),
+				fmt.Sprintf(`{"id":"fc_%d","type":"function_call","call_id":"call_%d","name":"read_files","arguments":"{\"paths\":42}","status":"completed"}`, requests, requests),
+			))
+			return
+		}
+		fmt.Fprint(w, openAIResponseJSON("resp_final", `{"id":"msg_final","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"first block","annotations":[]},{"type":"output_text","text":"second block","annotations":[]}]}`))
+	}))
+	defer server.Close()
+
+	result, err := newTestOpenAIAnalysisClient(server.URL).Analyze(context.Background(), "Analyze", AnalysisOptions{})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if requests != maxIterations+1 || result.Text != "first block\nsecond block" || result.ResponseID != "resp_final" {
+		t.Fatalf("requests = %d, result = %+v", requests, result)
+	}
+}
+
+func TestOpenAIAnalyzeRejectsIncompleteTerminalResponses(t *testing.T) {
+	testCases := []struct {
+		name      string
+		response  string
+		wantError string
+	}{
+		{
+			name:      "refusal",
+			response:  `{"id":"resp_refusal","object":"response","created_at":1,"model":"gpt-5.6-sol","status":"completed","output":[{"id":"msg_refusal","type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"declined"}]}]}`,
+			wantError: "OpenAI model refused the request (declined)",
+		},
+		{
+			name:      "max tokens",
+			response:  `{"id":"resp_max","object":"response","created_at":1,"model":"gpt-5.6-sol","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}`,
+			wantError: "OpenAI response incomplete (max_output_tokens)",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, tc.response)
+			}))
+			defer server.Close()
+
+			_, err := newTestOpenAIAnalysisClient(server.URL).Analyze(context.Background(), "Analyze", AnalysisOptions{})
+			if err == nil || err.Error() != tc.wantError {
+				t.Fatalf("Analyze error = %v, want %q", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestLegacyOpenAIResearcherDoesNotReceiveGPT56ProMode(t *testing.T) {
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, openAIResponseJSON("resp_final", `{"id":"msg_final","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]}`))
+	}))
+	defer server.Close()
+
+	_, err := newTestOpenAIAnalysisClientWithModel(server.URL, "gpt-5.5").Analyze(context.Background(), "Analyze", AnalysisOptions{ReasoningEffort: "high"})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	reasoning := request["reasoning"].(map[string]any)
+	if _, ok := reasoning["mode"]; ok {
+		t.Fatalf("legacy reasoning mode = %#v, want omitted", reasoning["mode"])
+	}
+}
+
+func TestResearcherToolOutputsRemainCachedAcrossHarnessCalls(t *testing.T) {
+	fileOps := &countingFileOps{}
+	client := New("test-key", fileOps, "gpt-5.5-pro", "gpt-5.5")
+	arguments := `{"paths":["example.go"]}`
+
+	first, err := client.executeFunction(context.Background(), "read_files", arguments)
+	if err != nil {
+		t.Fatalf("first executeFunction: %v", err)
+	}
+	second, err := client.executeFunction(context.Background(), "read_files", arguments)
+	if err != nil {
+		t.Fatalf("second executeFunction: %v", err)
+	}
+	if first != second || fileOps.reads != 1 {
+		t.Fatalf("results equal = %t, reads = %d, want 1", first == second, fileOps.reads)
+	}
+}
+
+type countingFileOps struct {
+	anthropicTestFileOps
+	reads int
+}
+
+func (f *countingFileOps) ReadFile(context.Context, string) (string, error) {
+	f.reads++
+	return "package example\n", nil
+}
+
+func newTestOpenAIAnalysisClient(baseURL string) *DeepAnalysisClient {
+	return newTestOpenAIAnalysisClientWithModel(baseURL, "gpt-5.6-sol")
+}
+
+func newTestOpenAIAnalysisClientWithModel(baseURL, model string) *DeepAnalysisClient {
+	provider := harnessopenai.New(
+		harnessopenai.WithAPIKey("test-key"),
+		harnessopenai.WithBaseURL(baseURL),
+		harnessopenai.WithDefaultModel(model),
+	)
+	return newOpenAIWithProvider(
+		provider,
+		model,
+		"gpt-5.5",
+		agent.NewScout("test-key", "gpt-5.5", "low", nil),
+	)
+}
+
+func openAIResponseJSON(id, output string) string {
+	return fmt.Sprintf(`{
+		"id":%q,
+		"object":"response",
+		"created_at":1,
+		"model":"gpt-5.6-sol",
+		"status":"completed",
+		"output":[%s],
+		"usage":{
+			"input_tokens":10,
+			"input_tokens_details":{"cached_tokens":2,"cache_write_tokens":3},
+			"output_tokens":5,
+			"output_tokens_details":{"reasoning_tokens":1},
+			"total_tokens":15
+		}
+	}`, id, output)
 }

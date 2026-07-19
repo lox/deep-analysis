@@ -10,8 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
+	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
+	harness "github.com/lox/agent-harness"
+	harnessanthropic "github.com/lox/agent-harness/provider/anthropic"
 	"github.com/lox/deep-analysis/internal/agent"
 )
 
@@ -68,13 +69,17 @@ func TestAnthropicAnalyzeRunsToolLoop(t *testing.T) {
 	}))
 	defer server.Close()
 
-	apiClient := anthropic.NewClient(
-		option.WithAPIKey("test-key"),
-		option.WithBaseURL(server.URL),
+	provider := harnessanthropic.New(
+		harnessanthropic.WithAPIKey("test-key"),
+		harnessanthropic.WithBaseURL(server.URL),
+		harnessanthropic.WithDefaultModel("claude-sonnet-5"),
+		harnessanthropic.WithRequestOption(anthropicoption.WithJSONSet("tools.0.strict", true)),
+		harnessanthropic.WithRequestOption(anthropicoption.WithJSONSet("tools.1.strict", true)),
+		harnessanthropic.WithRequestOption(anthropicoption.WithJSONSet("tools.2.strict", true)),
 	)
-	analysisClient := newAnthropicWithClient(
-		&apiClient,
-		"claude-fable-5",
+	analysisClient := newAnthropicWithProvider(
+		provider,
+		"claude-sonnet-5",
 		"claude-sonnet-5",
 		agent.NewAnthropicScout("test-key", "claude-sonnet-5", "low", anthropicTestFileOps{}),
 	)
@@ -107,6 +112,15 @@ func TestAnthropicAnalyzeRunsToolLoop(t *testing.T) {
 		if outputConfig["effort"] != "xhigh" {
 			t.Fatalf("request %d effort = %#v, want xhigh", i+1, outputConfig["effort"])
 		}
+		thinking := request["thinking"].(map[string]any)
+		if thinking["type"] != "adaptive" {
+			t.Fatalf("request %d thinking = %#v, want adaptive", i+1, thinking)
+		}
+		for j, tool := range request["tools"].([]any) {
+			if tool.(map[string]any)["strict"] != true {
+				t.Fatalf("request %d tool %d strict = %#v, want true", i+1, j, tool.(map[string]any)["strict"])
+			}
+		}
 	}
 	messages, ok := requests[1]["messages"].([]any)
 	if !ok || len(messages) != 3 {
@@ -117,6 +131,109 @@ func TestAnthropicAnalyzeRunsToolLoop(t *testing.T) {
 	toolResult := content[0].(map[string]any)
 	if toolResult["type"] != "tool_result" || toolResult["tool_use_id"] != "tool_1" {
 		t.Fatalf("tool result = %#v", toolResult)
+	}
+}
+
+func TestAnthropicAnalyzeReturnsToolErrorsToResearcher(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		requests = append(requests, request)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requests) == 1 {
+			fmt.Fprint(w, anthropicToolStream("msg_tool", "tool_bad", "read_files", `{"paths":42}`))
+			return
+		}
+		fmt.Fprint(w, anthropicTextStream("msg_final", "Recovered", "end_turn", "null"))
+	}))
+	defer server.Close()
+
+	result, err := newTestAnthropicAnalysisClient(server.URL).Analyze(context.Background(), "Analyze", AnalysisOptions{ReasoningEffort: "xhigh"})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if result.Text != "Recovered" || result.ResponseID != "msg_final" {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	messages := requests[1]["messages"].([]any)
+	toolResultMessage := messages[len(messages)-1].(map[string]any)
+	content := toolResultMessage["content"].([]any)
+	toolResult := content[0].(map[string]any)
+	encodedToolResult, err := json.Marshal(toolResult["content"])
+	if err != nil {
+		t.Fatalf("encode tool result content: %v", err)
+	}
+	if toolResult["tool_use_id"] != "tool_bad" || toolResult["is_error"] != true || !strings.Contains(string(encodedToolResult), "Error: invalid arguments:") {
+		t.Fatalf("tool result = %#v", toolResult)
+	}
+}
+
+func TestAnthropicAnalyzeStopsAtMaxIterations(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, anthropicToolStream(
+			fmt.Sprintf("msg_%d", requests),
+			fmt.Sprintf("tool_%d", requests),
+			"read_files",
+			`{"paths":42}`,
+		))
+	}))
+	defer server.Close()
+
+	analysisClient := newTestAnthropicAnalysisClient(server.URL)
+	toolExecutions := 0
+	for i := range analysisClient.runtime.tools {
+		execute := analysisClient.runtime.tools[i].Execute
+		analysisClient.runtime.tools[i].Execute = func(ctx context.Context, call harness.ToolCall) (*harness.ToolResult, error) {
+			toolExecutions++
+			return execute(ctx, call)
+		}
+	}
+	_, err := analysisClient.Analyze(context.Background(), "Analyze", AnalysisOptions{ReasoningEffort: "xhigh"})
+	if err == nil || err.Error() != fmt.Sprintf("max function call iterations (%d) reached", maxIterations) {
+		t.Fatalf("Analyze error = %v", err)
+	}
+	if requests != maxIterations+1 {
+		t.Fatalf("requests = %d, want %d", requests, maxIterations+1)
+	}
+	if toolExecutions != maxIterations {
+		t.Fatalf("tool executions = %d, want %d", toolExecutions, maxIterations)
+	}
+}
+
+func TestAnthropicAnalyzeCompletesOnLastStepAndPreservesTextBlocks(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests <= maxIterations {
+			fmt.Fprint(w, anthropicToolStream(
+				fmt.Sprintf("msg_%d", requests),
+				fmt.Sprintf("tool_%d", requests),
+				"read_files",
+				`{"paths":42}`,
+			))
+			return
+		}
+		fmt.Fprint(w, anthropicMultiTextStream("msg_final", "first block", "second block"))
+	}))
+	defer server.Close()
+
+	result, err := newTestAnthropicAnalysisClient(server.URL).Analyze(context.Background(), "Analyze", AnalysisOptions{ReasoningEffort: "xhigh"})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if requests != maxIterations+1 || result.Text != "first block\nsecond block" || result.ResponseID != "msg_final" {
+		t.Fatalf("requests = %d, result = %+v", requests, result)
 	}
 }
 
@@ -135,20 +252,15 @@ func TestEstimateAnthropicCostIncludesCacheWritePremiums(t *testing.T) {
 	}
 }
 
-func TestAddAnthropicUsageTracksCacheCategories(t *testing.T) {
-	message := &anthropic.Message{Usage: anthropic.Usage{
-		InputTokens:              100,
-		CacheCreationInputTokens: 200,
-		CacheCreation: anthropic.CacheCreation{
-			Ephemeral5mInputTokens: 125,
-			Ephemeral1hInputTokens: 75,
-		},
-		CacheReadInputTokens: 300,
-		OutputTokens:         400,
-	}}
-	var usage anthropicUsageTotals
-
-	addAnthropicUsage(message, &usage)
+func TestAnthropicUsageFromHarnessTracksCacheCategories(t *testing.T) {
+	usage := anthropicUsageFromHarness(harness.Usage{
+		InputTokens:                100,
+		CacheCreationInputTokens:   200,
+		CacheCreation5mInputTokens: 125,
+		CacheCreation1hInputTokens: 75,
+		CacheReadInputTokens:       300,
+		OutputTokens:               400,
+	}, 1)
 
 	if usage.inputTokens != 100 ||
 		usage.cacheCreation5mInputTokens != 125 ||
@@ -232,12 +344,16 @@ func TestAnthropicAnalyzeContinuesPauseTurn(t *testing.T) {
 }
 
 func newTestAnthropicAnalysisClient(baseURL string) *AnthropicDeepAnalysisClient {
-	apiClient := anthropic.NewClient(
-		option.WithAPIKey("test-key"),
-		option.WithBaseURL(baseURL),
+	provider := harnessanthropic.New(
+		harnessanthropic.WithAPIKey("test-key"),
+		harnessanthropic.WithBaseURL(baseURL),
+		harnessanthropic.WithDefaultModel("claude-fable-5"),
+		harnessanthropic.WithRequestOption(anthropicoption.WithJSONSet("tools.0.strict", true)),
+		harnessanthropic.WithRequestOption(anthropicoption.WithJSONSet("tools.1.strict", true)),
+		harnessanthropic.WithRequestOption(anthropicoption.WithJSONSet("tools.2.strict", true)),
 	)
-	return newAnthropicWithClient(
-		&apiClient,
+	return newAnthropicWithProvider(
+		provider,
 		"claude-fable-5",
 		"claude-sonnet-5",
 		agent.NewAnthropicScout("test-key", "claude-sonnet-5", "low", anthropicTestFileOps{}),
@@ -250,6 +366,26 @@ func anthropicTextStream(id, text, stopReason, stopDetails string) string {
 		sseEvent("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}`, text)) +
 		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
 		sseEvent("message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q,"stop_sequence":null,"stop_details":%s},"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`, stopReason, stopDetails)) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+}
+
+func anthropicToolStream(messageID, toolID, name, input string) string {
+	return sseEvent("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":%q,"type":"message","role":"assistant","model":"claude-fable-5","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`, messageID)) +
+		sseEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":%q,"name":%q,"input":%s}}`, toolID, name, input)) +
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`) +
+		sseEvent("message_stop", `{"type":"message_stop"}`)
+}
+
+func anthropicMultiTextStream(id string, texts ...string) string {
+	stream := sseEvent("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":%q,"type":"message","role":"assistant","model":"claude-fable-5","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`, id))
+	for i, text := range texts {
+		stream += sseEvent("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, i))
+		stream += sseEvent("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":%q}}`, i, text))
+		stream += sseEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i))
+	}
+	return stream +
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`) +
 		sseEvent("message_stop", `{"type":"message_stop"}`)
 }
 

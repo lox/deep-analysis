@@ -8,10 +8,9 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
+	harness "github.com/lox/agent-harness"
+	harnessopenai "github.com/lox/agent-harness/provider/openai"
 	"github.com/lox/deep-analysis/internal/agent"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/responses"
 )
 
 const (
@@ -77,13 +76,14 @@ func NewForProviders(researcherProvider, researcherAPIKey, scoutProvider, scoutA
 	}
 }
 
-// DeepAnalysisClient handles communication with OpenAI's Responses API
+// DeepAnalysisClient owns the deep-analysis researcher policy and runs it through agent-harness.
 type DeepAnalysisClient struct {
-	client          *openai.Client
+	provider        harness.Provider
+	providerName    string
 	scout           *agent.Scout
 	researcherModel string
 	scoutModel      string
-	tools           []responses.ToolUnionParam
+	tools           []harness.Tool
 	toolCache       map[string]string
 	cacheMu         sync.Mutex
 }
@@ -106,10 +106,14 @@ func New(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel strin
 }
 
 func newOpenAIWithScout(apiKey string, fileOps agent.FileOps, researcherModel, scoutModel string, scout *agent.Scout) *DeepAnalysisClient {
-	client := openai.NewClient(
-		option.WithAPIKey(apiKey),
+	provider := harnessopenai.New(
+		harnessopenai.WithAPIKey(apiKey),
+		harnessopenai.WithDefaultModel(researcherModel),
 	)
+	return newOpenAIWithProvider(provider, researcherModel, scoutModel, scout)
+}
 
+func newOpenAIWithProvider(provider harness.Provider, researcherModel, scoutModel string, scout *agent.Scout) *DeepAnalysisClient {
 	if researcherModel == "" {
 		researcherModel = DefaultResearcherModel
 	}
@@ -118,7 +122,8 @@ func newOpenAIWithScout(apiKey string, fileOps agent.FileOps, researcherModel, s
 	}
 
 	c := &DeepAnalysisClient{
-		client:          &client,
+		provider:        provider,
+		providerName:    OpenAIProvider,
 		scout:           scout,
 		researcherModel: researcherModel,
 		scoutModel:      scoutModel,
@@ -131,236 +136,7 @@ func newOpenAIWithScout(apiKey string, fileOps agent.FileOps, researcherModel, s
 
 // Analyze processes a markdown document and returns the analysis result
 func (c *DeepAnalysisClient) Analyze(ctx context.Context, document string, opts AnalysisOptions) (AnalysisResult, error) {
-	log.Debug("Starting analysis", "bytes", len(document))
-
-	// Track total usage across all API calls
-	var totalInputTokens int64
-	var totalOutputTokens int64
-	var totalCachedTokens int64
-	var totalCacheWriteTokens int64
-	var totalResearcherCost float64
-	var apiCalls int
-
-	inputItems := responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage(document, responses.EasyInputMessageRoleUser),
-	}
-	params := c.newResponseParams(inputItems, opts.PreviousResponseID, opts)
-
-	log.Debug("Calling OpenAI Responses API", "model", c.researcherModel, "previous_response_id", opts.PreviousResponseID)
-	response, err := c.client.Responses.New(ctx, params)
-	if err != nil {
-		log.Error("OpenAI API call failed", "error", err)
-		return AnalysisResult{}, fmt.Errorf("OpenAI API error: %w", err)
-	}
-
-	apiCalls++
-	totalInputTokens += response.Usage.InputTokens
-	totalOutputTokens += response.Usage.OutputTokens
-	totalCachedTokens += response.Usage.InputTokensDetails.CachedTokens
-	responseCacheWriteTokens := cacheWriteTokens(response.Usage)
-	totalCacheWriteTokens += responseCacheWriteTokens
-	totalResearcherCost += estimateResponseCost(c.researcherModel, response.Usage)
-
-	log.Debug("Received response", "id", response.ID, "status", response.Status,
-		"input_tokens", response.Usage.InputTokens,
-		"output_tokens", response.Usage.OutputTokens,
-		"cached_tokens", response.Usage.InputTokensDetails.CachedTokens,
-		"cache_write_tokens", responseCacheWriteTokens)
-
-	// Handle tool calls in a loop
-	for i := 0; i < maxIterations; i++ {
-		toolCalls := extractToolCalls(response)
-		log.Debug("Iteration progress", "iteration", i+1, "tool_calls", len(toolCalls))
-
-		if len(toolCalls) == 0 {
-			text := extractTextContent(response)
-			log.Debug("Analysis complete", "response_length", len(text))
-			if text == "" {
-				log.Error("No text content in response")
-				return AnalysisResult{}, fmt.Errorf("no text content in response")
-			}
-
-			// Get scout usage
-			scoutUsage := c.scout.Usage()
-
-			// Calculate costs
-			researcherCost := totalResearcherCost
-			scoutCost := estimateCost(c.scoutModel, scoutUsage.InputTokens, 0, 0, scoutUsage.OutputTokens)
-			totalCost := researcherCost + scoutCost
-			uncachedInputTokens := totalInputTokens - totalCachedTokens - totalCacheWriteTokens
-			if uncachedInputTokens < 0 {
-				uncachedInputTokens = 0
-			}
-
-			cacheHitRate := 0.0
-			if totalInputTokens > 0 {
-				cacheHitRate = (float64(totalCachedTokens) / float64(totalInputTokens)) * 100
-			}
-
-			log.Info("Researcher usage",
-				"model", c.researcherModel,
-				"api_calls", apiCalls,
-				"input_tokens", totalInputTokens,
-				"uncached_input_tokens", uncachedInputTokens,
-				"output_tokens", totalOutputTokens,
-				"cached_tokens", totalCachedTokens,
-				"cache_write_tokens", totalCacheWriteTokens,
-				"cache_hit_rate", fmt.Sprintf("%.1f%%", cacheHitRate),
-				"cost_usd", fmt.Sprintf("$%.4f", researcherCost))
-
-			log.Info("Scout usage",
-				"model", c.scoutModel,
-				"api_calls", scoutUsage.Calls,
-				"input_tokens", scoutUsage.InputTokens,
-				"output_tokens", scoutUsage.OutputTokens,
-				"cost_usd", fmt.Sprintf("$%.4f", scoutCost))
-
-			log.Info("Total cost", "usd", fmt.Sprintf("$%.4f", totalCost))
-
-			return AnalysisResult{
-				Text:       text,
-				ResponseID: response.ID,
-			}, nil
-		}
-
-		// Execute tool calls
-		toolOutputs := make(responses.ResponseInputParam, 0, len(toolCalls))
-		for _, toolCall := range toolCalls {
-			log.Info("Executing tool", "tool", toolCall.Name, "args", toolCall.Arguments)
-			result, err := c.executeFunction(ctx, toolCall.Name, toolCall.Arguments)
-			if err != nil {
-				log.Warn("Tool execution error", "tool", toolCall.Name, "error", err)
-				result = fmt.Sprintf("Error: %v", err)
-			} else {
-				log.Info("Tool execution success", "tool", toolCall.Name, "result_bytes", len(result))
-			}
-
-			toolOutputs = append(toolOutputs, responses.ResponseInputItemParamOfFunctionCallOutput(toolCall.ID, result))
-		}
-
-		log.Debug("Continuing with tool outputs", "count", len(toolOutputs))
-		params := c.newResponseParams(toolOutputs, response.ID, opts)
-
-		response, err = c.client.Responses.New(ctx, params)
-		if err != nil {
-			log.Error("Follow-up API call failed", "error", err)
-			return AnalysisResult{}, fmt.Errorf("OpenAI API error: %w", err)
-		}
-
-		apiCalls++
-		totalInputTokens += response.Usage.InputTokens
-		totalOutputTokens += response.Usage.OutputTokens
-		totalCachedTokens += response.Usage.InputTokensDetails.CachedTokens
-		responseCacheWriteTokens = cacheWriteTokens(response.Usage)
-		totalCacheWriteTokens += responseCacheWriteTokens
-		totalResearcherCost += estimateResponseCost(c.researcherModel, response.Usage)
-
-		log.Debug("Received follow-up response", "id", response.ID, "status", response.Status,
-			"input_tokens", response.Usage.InputTokens,
-			"output_tokens", response.Usage.OutputTokens,
-			"cached_tokens", response.Usage.InputTokensDetails.CachedTokens,
-			"cache_write_tokens", responseCacheWriteTokens)
-	}
-
-	log.Error("Max iterations reached", "max", maxIterations)
-	return AnalysisResult{}, fmt.Errorf("max function call iterations (%d) reached", maxIterations)
-}
-
-func (c *DeepAnalysisClient) newResponseParams(input responses.ResponseInputParam, previousResponseID string, opts AnalysisOptions) responses.ResponseNewParams {
-	params := responses.ResponseNewParams{
-		Model:          c.researcherModel,
-		Instructions:   openai.Opt(c.buildSystemPrompt()),
-		Tools:          c.tools,
-		PromptCacheKey: openai.Opt(fmt.Sprintf("deep-analysis:researcher:%s:%s", strings.ToLower(c.researcherModel), promptCacheVersion)),
-		Input: responses.ResponseNewParamsInputUnion{
-			OfInputItemList: input,
-		},
-	}
-
-	if opts.ReasoningEffort != "" {
-		params.Reasoning = buildReasoningParam(opts.ReasoningEffort)
-	}
-	if isGPT56Model(c.researcherModel) {
-		params.Reasoning.SetExtraFields(map[string]any{"mode": "pro"})
-	}
-	if previousResponseID != "" {
-		params.PreviousResponseID = openai.Opt(previousResponseID)
-	}
-
-	return params
-}
-
-// buildTools defines the three high-level tools for the researcher
-func (c *DeepAnalysisClient) buildTools() []responses.ToolUnionParam {
-	return []responses.ToolUnionParam{
-		responses.ToolParamOfFunction(
-			"find_files",
-			map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{
-						"type":        "string",
-						"description": "Natural language description of what files to find. Examples: 'CFR trainer tests', 'all zig files', 'error handling code', 'main entry point', 'configuration files'",
-						"minLength":   1,
-					},
-					"paths": map[string]any{
-						"type":        "array",
-						"description": "Optional directories to search within. Defaults to entire project.",
-						"items": map[string]any{
-							"type": "string",
-						},
-						"default": []string{},
-					},
-				},
-				"required":             []string{"query", "paths"},
-				"additionalProperties": false,
-			},
-			true,
-		),
-		responses.ToolParamOfFunction(
-			"summarize_files",
-			map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"paths": map[string]any{
-						"type":        "array",
-						"description": "List of file paths to summarize",
-						"items": map[string]any{
-							"type": "string",
-						},
-						"minItems": 1,
-					},
-					"focus": map[string]any{
-						"type":        "string",
-						"description": "Optional focus for the summaries. Examples: 'error handling patterns', 'public API', 'test coverage', 'dependencies'",
-						"default":     "",
-					},
-				},
-				"required":             []string{"paths", "focus"},
-				"additionalProperties": false,
-			},
-			true,
-		),
-		responses.ToolParamOfFunction(
-			"read_files",
-			map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"paths": map[string]any{
-						"type":        "array",
-						"description": "List of file paths to read in full",
-						"items": map[string]any{
-							"type": "string",
-						},
-						"minItems": 1,
-					},
-				},
-				"required":             []string{"paths"},
-				"additionalProperties": false,
-			},
-			true,
-		),
-	}
+	return c.analyzeWithHarness(ctx, document, opts)
 }
 
 // executeFunction executes a function call requested by the model
@@ -507,63 +283,6 @@ func (c *DeepAnalysisClient) setCachedToolOutput(key, val string) {
 	c.toolCache[key] = val
 }
 
-// ToolCall represents a function tool call
-type ToolCall struct {
-	ID        string
-	Name      string
-	Arguments string
-}
-
-// extractToolCalls extracts tool calls from a response
-func extractToolCalls(response *responses.Response) []ToolCall {
-	var toolCalls []ToolCall
-
-	log.Debug("Extracting tool calls", "output_items", len(response.Output))
-	for i, item := range response.Output {
-		log.Debug("Processing output item", "index", i, "type", item.Type)
-		if item.Type == "function_call" {
-			toolCalls = append(toolCalls, ToolCall{
-				ID:        item.CallID,
-				Name:      item.Name,
-				Arguments: item.Arguments,
-			})
-			log.Debug("Found function call", "name", item.Name, "id", item.CallID)
-		}
-	}
-
-	return toolCalls
-}
-
-// extractTextContent extracts text content from a response
-func extractTextContent(response *responses.Response) string {
-	var textParts []string
-
-	log.Debug("Extracting text content", "output_items", len(response.Output))
-	for i, item := range response.Output {
-		log.Debug("Processing output item", "index", i, "type", item.Type, "content_items", len(item.Content))
-		if item.Type == "message" {
-			for j, contentItem := range item.Content {
-				log.Debug("Processing content item", "index", j, "type", contentItem.Type)
-				if contentItem.Type == "text" || contentItem.Type == "output_text" {
-					textParts = append(textParts, contentItem.Text)
-					log.Debug("Found text content", "length", len(contentItem.Text))
-				}
-			}
-		}
-	}
-
-	result := ""
-	for _, part := range textParts {
-		if result != "" {
-			result += "\n"
-		}
-		result += part
-	}
-
-	log.Debug("Extracted text", "parts", len(textParts), "total_length", len(result))
-	return result
-}
-
 // buildSystemPrompt creates the system prompt for the researcher
 func (c *DeepAnalysisClient) buildSystemPrompt() string {
 	return `You are an expert deep analysis AI consulted for the most challenging and complex problems.
@@ -692,13 +411,13 @@ func estimateCost(model string, inputTokens, cachedInputTokens, cacheWriteInputT
 	return inputCost + cachedInputCost + cacheWriteInputCost + outputCost
 }
 
-func estimateResponseCost(model string, usage responses.ResponseUsage) float64 {
+func estimateHarnessCallCost(model string, usage harness.Usage) float64 {
 	return estimateCost(
 		model,
-		usage.InputTokens,
-		usage.InputTokensDetails.CachedTokens,
-		cacheWriteTokens(usage),
-		usage.OutputTokens,
+		int64(usage.InputTokens+usage.CachedInputTokens+usage.CacheCreationInputTokens),
+		int64(usage.CachedInputTokens),
+		int64(usage.CacheCreationInputTokens),
+		int64(usage.OutputTokens),
 	)
 }
 
@@ -753,38 +472,7 @@ func pricingForModel(model string) (inputCostPer1M, cachedInputCostPer1M, output
 func matchesModelOrSnapshot(model, base string) bool {
 	return model == base || strings.HasPrefix(model, base+"-20")
 }
-
 func isGPT56Model(model string) bool {
 	normalized := strings.ToLower(model)
 	return normalized == "gpt-5.6" || strings.HasPrefix(normalized, "gpt-5.6-")
-}
-
-func cacheWriteTokens(usage responses.ResponseUsage) int64 {
-	var details struct {
-		CacheWriteTokens int64 `json:"cache_write_tokens"`
-	}
-	if err := json.Unmarshal([]byte(usage.InputTokensDetails.RawJSON()), &details); err != nil || details.CacheWriteTokens < 0 {
-		return 0
-	}
-	return details.CacheWriteTokens
-}
-
-// buildReasoningParam creates a ReasoningParam from a string effort level.
-// Supports: low, medium, high, xhigh. Defaults to high if unrecognized.
-func buildReasoningParam(effort string) responses.ReasoningParam {
-	var e responses.ReasoningEffort
-	switch effort {
-	case "low":
-		e = responses.ReasoningEffortLow
-	case "medium":
-		e = responses.ReasoningEffortMedium
-	case "high":
-		e = responses.ReasoningEffortHigh
-	case "xhigh":
-		// SDK doesn't have xhigh constant yet, but API accepts it
-		e = responses.ReasoningEffort("xhigh")
-	default:
-		e = responses.ReasoningEffortHigh
-	}
-	return responses.ReasoningParam{Effort: e}
 }
