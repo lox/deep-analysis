@@ -65,7 +65,7 @@ func (c *DeepAnalysisClient) analyzeWithHarness(ctx context.Context, document st
 		return AnalysisResult{}, fmt.Errorf("%s analysis failed", c.providerErrorName())
 	}
 
-	text := lastAssistantText(result.Messages)
+	text := finalAssistantText(result.Messages)
 	if text == "" {
 		if c.providerName == AnthropicProvider {
 			return AnalysisResult{}, fmt.Errorf("no text content in Anthropic response (stop reason: %s)", result.FinishReason)
@@ -175,11 +175,9 @@ func (c *DeepAnalysisClient) refusalError(details string) error {
 	return fmt.Errorf("%s (%s)", prefix, details)
 }
 
-func lastAssistantText(messages []harness.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == harness.RoleAssistant && messages[i].Content != "" {
-			return messages[i].Content
-		}
+func finalAssistantText(messages []harness.Message) string {
+	if len(messages) == 0 || messages[len(messages)-1].Role != harness.RoleAssistant {
+		return ""
 	}
-	return ""
+	return messages[len(messages)-1].Content
 }

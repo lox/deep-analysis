@@ -482,6 +482,28 @@ func TestOpenAIAnalyzeRejectsIncompleteTerminalResponses(t *testing.T) {
 	}
 }
 
+func TestOpenAIAnalyzeRejectsTextlessFinalResponse(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			fmt.Fprint(w, openAIResponseJSON("resp_tool",
+				`{"id":"msg_preamble","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"I'll inspect that file.","annotations":[]}]},`+
+					`{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_files","arguments":"{\"paths\":42}","status":"completed"}`,
+			))
+			return
+		}
+		fmt.Fprint(w, openAIResponseJSON("resp_final", `{"id":"msg_final","type":"message","role":"assistant","status":"completed","content":[]}`))
+	}))
+	defer server.Close()
+
+	result, err := newTestOpenAIAnalysisClient(server.URL).Analyze(context.Background(), "Analyze", AnalysisOptions{})
+	if err == nil || err.Error() != "no text content in response" {
+		t.Fatalf("Analyze result/error = %+v/%v, want no-text error", result, err)
+	}
+}
+
 func TestLegacyOpenAIResearcherDoesNotReceiveGPT56ProMode(t *testing.T) {
 	var request map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
