@@ -200,7 +200,7 @@ func (c *AnalyzeCmd) Run() error {
 
 	// Append result to document
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	updatedContent := fmt.Sprintf("%s\n\n---\n\n## Analysis %s\n\n%s\n", string(inputContent), timestamp, result.Text)
+	updatedContent := formatAnalysisDocument(string(inputContent), timestamp, result.Text)
 
 	// Write output document
 	log.Info("Writing output document", "path", outputPath)
@@ -227,6 +227,10 @@ func (c *AnalyzeCmd) Run() error {
 
 	log.Info("Analysis complete", "output", outputPath)
 	return nil
+}
+
+func formatAnalysisDocument(input, timestamp, analysis string) string {
+	return fmt.Sprintf("%s\n\n---\n\n## Analysis %s\n\n%s\n", input, timestamp, analysis)
 }
 
 func (c *AnalyzeCmd) modelSelections(config appConfig) (researcher, scout modelSelection, err error) {

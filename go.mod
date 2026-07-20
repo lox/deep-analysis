@@ -1,13 +1,14 @@
 module github.com/lox/deep-analysis
 
-go 1.25.1
+go 1.26.0
 
 require (
 	github.com/alecthomas/kong v1.12.1
-	github.com/anthropics/anthropic-sdk-go v1.57.0
+	github.com/anthropics/anthropic-sdk-go v1.58.0
 	github.com/bmatcuk/doublestar/v4 v4.9.1
 	github.com/charmbracelet/log v0.4.2
 	github.com/charmbracelet/x/term v0.2.1
+	github.com/lox/agent-harness v0.3.0
 	github.com/mark3labs/mcp-go v0.41.1
 	github.com/openai/openai-go v1.12.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -28,6 +29,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
+	github.com/openai/openai-go/v3 v3.44.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/cast v1.7.1 // indirect

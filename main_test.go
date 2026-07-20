@@ -318,6 +318,14 @@ func TestVersionInterfaces(t *testing.T) {
 	}
 }
 
+func TestFormatAnalysisDocumentPreservesCLIOutput(t *testing.T) {
+	got := formatAnalysisDocument("# Question\n\nWhat changed?", "2026-07-19 14:05:06", "The analysis.")
+	want := "# Question\n\nWhat changed?\n\n---\n\n## Analysis 2026-07-19 14:05:06\n\nThe analysis.\n"
+	if got != want {
+		t.Fatalf("formatted document = %q, want %q", got, want)
+	}
+}
+
 func TestModelSelectionsUseConfigAndCLIOverrides(t *testing.T) {
 	config := appConfig{
 		Researcher: "anthropic.claude-opus-4-8@xhigh",

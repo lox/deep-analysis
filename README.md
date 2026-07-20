@@ -15,7 +15,7 @@ A CLI tool for systematic deep analysis of markdown documents and codebases usin
 ## Prerequisites
 
 - [mise](https://mise.jdx.dev/) for the pinned Go and CLI toolchain in `mise.toml`
-- Go 1.25.3 or later if building without `mise`
+- Go 1.26.0 or later if building without `mise`
 - An [OpenAI API key](https://platform.openai.com/) or [Anthropic API key](https://platform.claude.com/), depending on the selected provider
 
 ## Installation
